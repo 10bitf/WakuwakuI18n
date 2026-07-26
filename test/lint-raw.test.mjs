@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stripComments, findRawHan } from '../tools/lint-raw.mjs';
+import { stripComments, findRawHan } from '../src/lint-raw.js';
 
 test('stripComments:去三种注释,不吃 URL 双斜杠', () => {
   assert.equal(stripComments('a // 中文注释'), 'a ');

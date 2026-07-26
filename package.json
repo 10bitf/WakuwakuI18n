@@ -1,11 +1,13 @@
 {
   "name": "wakuwaku-i18n",
   "version": "0.1.0",
+  "private": true,
   "type": "module",
   "description": "Wakuwaku 项目共用的文案/多语言框架",
   "exports": {
     ".": { "types": "./src/core.d.ts", "default": "./src/core.js" },
     "./load": { "types": "./src/load.d.ts", "default": "./src/load.js" }
   },
+  "engines": { "node": ">=20" },
   "scripts": { "test": "node --test" }
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { analyze, collectUsedKeys } from '../tools/check.mjs';
+import { analyze, collectUsedKeys } from '../src/check.js';
 
 test('analyze:用了未定义=错;定义未用=提示;非zh缺=清单;占位符不一致=错', () => {
   const r = analyze({

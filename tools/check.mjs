@@ -2,62 +2,11 @@
 // 语义与 Photoman tools/i18n-check.mjs 一致;扫描范围来自项目根的 i18n.config.mjs。
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { loadTables } from '../src/load.js';
+import { analyze, collectUsedKeys } from '../src/check.js';
 
 const FALLBACK = 'zh';
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'i18n', '.git', '.astro']);
-const placeholders = (s) => new Set([...String(s).matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]));
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-export function analyze({ defined, used, locales }) {
-  const errors = [], warnings = [], info = [];
-  const base = defined[FALLBACK] || {};
-  const usedSet = new Set(used);
-  for (const k of usedSet) {
-    if (!(k in base)) errors.push(`用了未定义的文案 key: ${k}（代码里在用，i18n/${FALLBACK}/ 里没有）`);
-  }
-  for (const k of Object.keys(base)) {
-    if (!usedSet.has(k)) warnings.push(`定义了但没人用: ${k}`);
-  }
-  for (const loc of locales) {
-    if (loc === FALLBACK) continue;
-    const tbl = defined[loc] || {};
-    const missing = Object.keys(base).filter((k) => !(k in tbl));
-    if (missing.length) info.push(`${loc} 缺 ${missing.length} 条: ${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ' …' : ''}`);
-    for (const k of Object.keys(base)) {
-      if (!(k in tbl)) continue;
-      const a = placeholders(base[k]), b = placeholders(tbl[k]);
-      const diff = [...new Set([...a, ...b])].filter((p) => a.has(p) !== b.has(p));
-      if (diff.length) errors.push(`占位符不一致 ${k}（${FALLBACK} vs ${loc}）: ${diff.join(', ')}`);
-    }
-  }
-  return { errors, warnings, info };
-}
-
-export function collectUsedKeys({ root, scan, namespaces }) {
-  const keys = new Set();
-  const nsAlt = namespaces.map(escapeRe).join('|');
-  // ② 形如 key 的裸字符串字面量(状态表等动态取词的 key 不经 t('...') 出现,靠这条认出来)
-  const keyLit = new RegExp(`['"]((?:${nsAlt})\\.[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+)['"]`, 'g');
-  // ③ 模板 {{ns.x.y}} 占位。前缀限定与②一致,防止 Vue/Astro 花括号插值同形误报。
-  const tplLit = new RegExp(`\\{\\{((?:${nsAlt})\\.[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+)\\}\\}`, 'g');
-  const walk = (dir, exts) => {
-    if (!fs.existsSync(dir)) return;
-    for (const f of fs.readdirSync(dir)) {
-      if (SKIP_DIRS.has(f)) continue;
-      const fp = path.join(dir, f);
-      if (fs.statSync(fp).isDirectory()) { walk(fp, exts); continue; }
-      if (!exts.includes(path.extname(f))) continue;
-      const src = fs.readFileSync(fp, 'utf8');
-      for (const m of src.matchAll(/\bt\(\s*['"]([A-Za-z][A-Za-z0-9_.]*)['"]/g)) keys.add(m[1]);
-      for (const m of src.matchAll(keyLit)) keys.add(m[1]);
-      for (const m of src.matchAll(tplLit)) keys.add(m[1]);
-    }
-  };
-  for (const s of scan) walk(path.resolve(root, s.dir), s.exts);
-  return [...keys];
-}
 
 async function main() {
   const root = process.cwd();
@@ -69,6 +18,12 @@ async function main() {
   const namespaces = [...new Set(Object.keys(defined[FALLBACK] || {}).map((k) => k.split('.')[0]))];
   const used = collectUsedKeys({ root, scan: cfg.scan, namespaces });
   const { errors, warnings, info } = analyze({ defined, used, locales });
+  // cfg.locales 是声明清单;真值以 i18n/ 目录为准,这里做交叉校验——声明了却没建目录必须报错。
+  if (cfg.locales) {
+    for (const loc of cfg.locales) {
+      if (!(loc in defined)) errors.push(`声明了语言 '${loc}' 但 i18n/${loc}/ 不存在`);
+    }
+  }
   for (const s of info) console.log('  · ' + s);
   for (const s of warnings) console.log('  \x1b[33m!\x1b[0m ' + s);
   for (const s of errors) console.log('  \x1b[31m✗\x1b[0m ' + s);
@@ -76,12 +31,4 @@ async function main() {
   console.log(`\x1b[32m✓\x1b[0m i18n 检查通过（${Object.keys(defined[FALLBACK] || {}).length} 条文案，${warnings.length} 项提示）`);
 }
 
-// 直跑与经 npm file: 符号链接跑都要认得自己(argv[1] 是链接路径,import.meta.url 是真实路径)
-function isCliInvocation() {
-  if (!process.argv[1]) return false;
-  const arg = path.resolve(process.argv[1]);
-  let real = arg;
-  try { real = fs.realpathSync(arg); } catch {}
-  return real === fileURLToPath(import.meta.url) || arg === fileURLToPath(import.meta.url);
-}
-if (isCliInvocation()) main();
+main().catch((e) => { console.error('✗ ' + (e && e.message || e)); process.exit(1); });
