@@ -7,5 +7,5 @@
     ".": { "types": "./src/core.d.ts", "default": "./src/core.js" },
     "./load": { "types": "./src/load.d.ts", "default": "./src/load.js" }
   },
-  "scripts": { "test": "node --test test/" }
+  "scripts": { "test": "node --test test/core.test.mjs" }
 }
