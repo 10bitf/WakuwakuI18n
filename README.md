@@ -16,7 +16,7 @@ Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI1
 3. package.json:
    ```json
    {
-     "wakuwaku-i18n": "file:../WakuwakuI18n",
+     "dependencies": { "wakuwaku-i18n": "file:../WakuwakuI18n" },
      "scripts": {
        "i18n:check": "node node_modules/wakuwaku-i18n/tools/check.mjs",
        "i18n:lint-raw": "node node_modules/wakuwaku-i18n/tools/lint-raw.mjs"
@@ -31,7 +31,7 @@ import { makeT, resolveLocale } from 'wakuwaku-i18n'      // 环境无关
 import { loadTables } from 'wakuwaku-i18n/load'           // Node-only
 ```
 
-## 规矩
+## 规矩（与 Photoman 一致）
 
 1. 变量用 {名字},不要用位置。
 2. 以 _ 开头的键是给人看的说明,不进文案表。
