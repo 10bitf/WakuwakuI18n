@@ -48,4 +48,12 @@ async function main() {
   console.log('\x1b[32m✓\x1b[0m 无裸中文');
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+// 直跑与经 npm file: 符号链接跑都要认得自己(argv[1] 是链接路径,import.meta.url 是真实路径)
+function isCliInvocation() {
+  if (!process.argv[1]) return false;
+  const arg = path.resolve(process.argv[1]);
+  let real = arg;
+  try { real = fs.realpathSync(arg); } catch {}
+  return real === fileURLToPath(import.meta.url) || arg === fileURLToPath(import.meta.url);
+}
+if (isCliInvocation()) main();
