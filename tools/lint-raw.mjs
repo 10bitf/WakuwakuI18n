@@ -34,7 +34,8 @@ async function main() {
       const fp = path.join(dir, f);
       if (fs.statSync(fp).isDirectory()) { walk(fp); continue; }
       if (!exts.includes(path.extname(f))) continue;
-      // 行号要对得上原文件,所以逐行剥注释判定;跨行块注释先全文剥再按行对照。
+      // 行号按剥完注释后的文本计;跨行块注释(/* */ 与 <!-- -->)整段剥除会让其后内容的
+      // 报告行号相对原文件小幅前移——行号仅供人找位置,命中判定不受影响。
       const cleaned = stripComments(fs.readFileSync(fp, 'utf8'));
       for (const h of findRawHan(cleaned)) {
         console.log(`  \x1b[31m✗\x1b[0m ${path.relative(root, fp)}:${h.line}: ${h.text}`);
