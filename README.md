@@ -28,6 +28,25 @@ Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI1
    }
    ```
 
+## 小程序端接入(uni-app + Vue3)
+
+1. `i18n.config.mjs` 补 `emit.out`(产物路径,记得加进 .gitignore):
+   ```javascript
+   emit: { out: 'src/i18n/generated.js' }
+   ```
+2. package.json 加脚本与构建钩子:
+   ```json
+   "i18n:emit": "node node_modules/wakuwaku-i18n/tools/emit.mjs",
+   "predev": "npm run i18n:emit",
+   "prebuild": "npm run i18n:emit"
+   ```
+3. 复制 `node_modules/wakuwaku-i18n/templates/uniapp-vue3.js` 到 `src/i18n/index.js`,按文件头注释改三处。
+4. `main.js` 里把 `t` 挂全局,模板中 `{{ t('app.xxx') }}` 直接可用。
+
+**产物是自包含的**:文案表与取词逻辑都在 `generated.js` 里,端不 import 框架任何东西。
+这样小程序构建的模块解析差异(跨目录、symlink)一概不存在——这是端接入不再踩坑的关键。
+产物**不入库**,由构建钩子生成。
+
 ## API
 
 ```javascript
