@@ -305,9 +305,63 @@ function maskHtmlComments(code) {
   return code.replace(/<!--[\s\S]*?-->/g, mask);
 }
 
-// ---------- <style> 区:只遮蔽 CSS 注释 ----------
-function maskStyleCssComments(code) {
-  return code.replace(/\/\*[\s\S]*?\*\//g, mask);
+// ---------- <style> 区 / 独立样式文件(.scss/.css):遮蔽注释,字符串与 url() 感知 ----------
+// SCSS 有 // 行注释;但 // 也合法出现在字符串("//x")与未加引号的 url(//host/x) 里,
+// 那两处若误当注释会把真文案遮进漏检侧(content:"中文" 是用户可见文案)。
+// 故单趟扫描:字符串与 url(...) 内不认注释起点。fail-safe 与脚本区同向:
+// 块注释不闭合当普通字符(不遮蔽);字符串不闭合止于行尾。
+function maskStyleComments(code) {
+  const out = code.split('');
+  const n = code.length;
+  const blank = (s, e) => { for (let k = s; k < e && k < n; k++) if (out[k] !== '\n') out[k] = ' '; };
+  let i = 0;
+  let lastWord = '';
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '"' || c === '\'') {
+      let j = i + 1;
+      while (j < n) {
+        if (code[j] === '\\') { j += 2; continue; }
+        if (code[j] === c) { j++; break; }
+        if (code[j] === '\n') break; // 不闭合:止于行尾,不吞后续行(fail-safe)
+        j++;
+      }
+      i = Math.min(j, n); lastWord = ''; continue;
+    }
+    if (c === '(' && lastWord.toLowerCase() === 'url') {
+      // url(...) 未加引号的内容可含 //(协议相对地址),不是注释;引号内容在上面的字符串分支
+      let j = i + 1;
+      while (j < n && code[j] !== ')' && code[j] !== '\n') {
+        if (code[j] === '"' || code[j] === '\'') {
+          const q = code[j]; j++;
+          while (j < n && code[j] !== q && code[j] !== '\n') { if (code[j] === '\\') j++; j++; }
+        }
+        j++;
+      }
+      i = Math.min(j, n); lastWord = ''; continue;
+    }
+    if (c === '/' && c2 === '*') {
+      let j = i + 2;
+      while (j < n && !(code[j] === '*' && code[j + 1] === '/')) j++;
+      if (j < n) { blank(i, j + 2); i = j + 2; lastWord = ''; continue; }
+      i++; continue; // 块注释不闭合:保守放弃,不遮蔽(fail-safe)
+    }
+    if (c === '/' && c2 === '/') {
+      let j = i + 2;
+      while (j < n && code[j] !== '\n') j++;
+      blank(i, j); i = j; continue;
+    }
+    if (/[A-Za-z-]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9-]/.test(code[j])) j++;
+      lastWord = code.slice(i, j);
+      i = j; continue;
+    }
+    if (!/\s/.test(c)) lastWord = '';
+    i++;
+  }
+  return out.join('');
 }
 
 // ---------- .json / .jsonc:只留"值",键、注释、_ 前缀子树全遮蔽 ----------
@@ -405,7 +459,7 @@ function maskAstro(src) {
     if (r.start < cursor) continue; // 防御:异常重叠(不应发生)时跳过,不越界重算
     result += maskHtmlComments(src.slice(cursor, r.start));
     const body = src.slice(r.start, r.end);
-    result += r.type === 'script' ? maskScriptRegion(body) : maskStyleCssComments(body);
+    result += r.type === 'script' ? maskScriptRegion(body) : maskStyleComments(body);
     cursor = r.end;
   }
   result += maskHtmlComments(src.slice(cursor));
@@ -417,6 +471,7 @@ export function maskNonProse(src, ext) {
   const e = String(ext || '').toLowerCase();
   if (SCRIPT_ONLY_EXTS.has(e)) return maskScriptRegion(String(src));
   if (e === '.json' || e === '.jsonc') return maskJsonNonProse(String(src));
+  if (e === '.scss' || e === '.css') return maskStyleComments(String(src));
   // .astro/.vue/.html 同为"模板 + <script> + <style>"结构,共用四区管线
   // (.vue/.html 没有 --- frontmatter,maskAstro 的围栏检测自然不匹配,直接复用即可)
   if (e === '.astro' || e === '.vue' || e === '.html' || e === '.htm') return maskAstro(String(src));

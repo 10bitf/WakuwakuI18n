@@ -394,3 +394,28 @@ test('fail-safe JSON 4:反斜杠后紧跟裸换行(非法转义)止损不遮,中
   const ok = '{\n  "中文键\\n续": "v"\n}';
   assert.deepEqual(findRawHan(maskNonProse(ok, '.json')), [], '合法转义的键仍正常遮蔽');
 });
+
+// ---------- 样式区/.scss:注释遮蔽(字符串与 url() 感知,2026-07-27 Racing miniapp 接入时补) ----------
+test('maskNonProse(.scss):行注释与块注释被遮蔽,content 字符串保留', () => {
+  const src = '// 设计说明:中文\n$red: #E10600; /* 品牌红:中文说明 */\n.a { content: "真文案中文"; }';
+  const hits = findRawHan(maskNonProse(src, '.scss'));
+  assert.deepEqual(hits.map((h) => h.line), [3]);
+});
+
+test('maskNonProse(.scss):字符串与 url() 里的 // 不当注释起点(漏检侧防线)', () => {
+  const src = '.a { content: "//中文一"; }\n.b { background: url(//host/中文二.png); }';
+  const hits = findRawHan(maskNonProse(src, '.scss'));
+  assert.deepEqual(hits.map((h) => h.line), [1, 2]);
+});
+
+test('maskNonProse(.scss):等长遮蔽;不闭合块注释不遮(fail-safe)', () => {
+  const src = '/* 未闭合:中文\n$x: 1;';
+  const masked = maskNonProse(src, '.scss');
+  assert.equal(masked.length, src.length);
+  assert.deepEqual(findRawHan(masked).map((h) => h.line), [1]);
+});
+
+test('maskNonProse(.vue):<style lang="scss"> 的 // 行注释被遮蔽', () => {
+  const src = '<template><view/></template>\n<style lang="scss">\n// 注:中文\n.a { color: red; }\n</style>';
+  assert.deepEqual(findRawHan(maskNonProse(src, '.vue')), []);
+});
