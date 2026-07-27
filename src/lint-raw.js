@@ -310,6 +310,52 @@ function maskStyleCssComments(code) {
   return code.replace(/\/\*[\s\S]*?\*\//g, mask);
 }
 
+// ---------- .json / .jsonc:只留"值",键、注释、_ 前缀子树全遮蔽 ----------
+// JSON 的键也是带引号的字符串,拿广义"任意字符串字面量"去扫会把键一并抓走,而键从不是用户可见文案。
+// 注释遮蔽与键值判定放在**同一趟**里做:分趟会重蹈"各步骤分词不同步"的覆辙
+// (字符串里的 // 被当注释、注释里的引号扰乱键值判定,两个方向都会静默扩大遮蔽面)。
+function maskJsonNonProse(src) {
+  const out = src.split('');
+  const blank = (s, e) => { for (let k = s; k < e; k++) if (out[k] !== '\n') out[k] = ' '; };
+  const stack = [];
+  const n = src.length;
+  let i = 0;
+  while (i < n) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') {          // JSONC 行注释
+      let e = i; while (e < n && src[e] !== '\n') e++;
+      blank(i, e); i = e; continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {          // JSONC 块注释
+      let e = i + 2; while (e < n && !(src[e] === '*' && src[e + 1] === '/')) e++;
+      e = Math.min(n, e + 2); blank(i, e); i = e; continue;
+    }
+    if (c === '{') { stack.push({ type: 'obj', key: null, expectKey: true }); i++; continue; }
+    if (c === '[') { stack.push({ type: 'arr', key: null, expectKey: false }); i++; continue; }
+    if (c === '}' || c === ']') { stack.pop(); i++; continue; }
+    if (c === ':') { const t = stack[stack.length - 1]; if (t && t.type === 'obj') t.expectKey = false; i++; continue; }
+    if (c === ',') { const t = stack[stack.length - 1]; if (t && t.type === 'obj') t.expectKey = true; i++; continue; }
+    if (c === '"' || c === "'") {
+      const q = c, start = i;
+      i++;
+      let value = '';
+      while (i < n) {
+        if (src[i] === '\\') { value += src[i + 1] || ''; i += 2; continue; }
+        if (src[i] === q) { i++; break; }
+        value += src[i]; i++;
+      }
+      const top = stack[stack.length - 1];
+      if (top && top.type === 'obj' && top.expectKey) { top.key = value; blank(start, i); continue; }  // 键:遮蔽
+      // 值:键路径上任一段以 _ 开头(_note 这类给人看的说明)整棵跳过,与 load.js 对 _ 的口径一致
+      const keyPath = stack.filter((f) => f.type === 'obj').map((f) => f.key).filter((k) => k != null);
+      if (keyPath.some((k) => k.startsWith('_'))) blank(start, i);
+      continue;                                     // 其余值保留,交给 findRawHan
+    }
+    i++;
+  }
+  return out.join('');
+}
+
 // ---------- .astro:frontmatter + <script> 按脚本区处理,<style> 只遮蔽 CSS 注释,其余模板区只遮蔽 HTML 注释 ----------
 function maskAstro(src) {
   const regions = []; // { start, end, type: 'script' | 'style' }
@@ -351,11 +397,13 @@ function maskAstro(src) {
 
 // ---------- 对外接口:按扩展名把内容交给对应管线 ----------
 export function maskNonProse(src, ext) {
-  const code = String(src);
   const e = String(ext || '').toLowerCase();
-  if (SCRIPT_ONLY_EXTS.has(e)) return maskScriptRegion(code);
-  if (e === '.astro') return maskAstro(code);
-  return maskHtmlComments(code); // 扩展名未知(或其它未识别类型):模板区保守处理
+  if (SCRIPT_ONLY_EXTS.has(e)) return maskScriptRegion(String(src));
+  if (e === '.json' || e === '.jsonc') return maskJsonNonProse(String(src));
+  // .astro/.vue/.html 同为"模板 + <script> + <style>"结构,共用四区管线
+  // (.vue/.html 没有 --- frontmatter,maskAstro 的围栏检测自然不匹配,直接复用即可)
+  if (e === '.astro' || e === '.vue' || e === '.html' || e === '.htm') return maskAstro(String(src));
+  return maskHtmlComments(String(src));            // 未知扩展名:保守只遮 HTML 注释
 }
 
 export function findRawHan(src) {

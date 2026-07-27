@@ -267,3 +267,32 @@ test('fail-safe:export 无 from 的字符串是真文案,不当路径遮蔽', ()
   const hits = findRawHan(maskNonProse('export const s = "中文导出值";\nexport default "默认文案";', '.js'));
   assert.deepEqual(hits.map((h) => h.line), [1, 2]);
 });
+
+test('.vue/.html 走四区逻辑:模板中文命中,script 注释不命中,style content 命中', () => {
+  const vue = '<template>\n  <p>模板文案</p>\n</template>\n<script>\n// 中文注释\nconst s = "脚本文案";\n</script>\n<style>\n.a::after { content: "看得见"; } /* 样式注释中文 */\n</style>';
+  const hits = findRawHan(maskNonProse(vue, '.vue')).map((h) => h.line);
+  assert.deepEqual(hits, [2, 6, 9], '模板文案/脚本文案/content 命中;两处注释不命中');
+  const html = '<!doctype html>\n<!-- 注释中文 -->\n<p>页面文案</p>';
+  assert.deepEqual(findRawHan(maskNonProse(html, '.html')).map((h) => h.line), [3]);
+});
+
+test('.json 只扫值不扫键;JSONC 注释与 _ 前缀子树遮蔽', () => {
+  const json = '{\n  "中文键": "值文案",\n  "_note": "说明不算",\n  "arr": ["数组值"],\n  "n": 1 // 注释中文\n}';
+  const hits = findRawHan(maskNonProse(json, '.json'));
+  assert.deepEqual(hits.map((h) => h.line), [2, 4], '键与 _note 子树与注释都不报,值报');
+  assert.ok(hits[0].text.includes('值文案'));
+  assert.ok(!hits[0].text.includes('中文键'), '键必须已被遮蔽');
+});
+
+test('.json 字符串里的 // 不当注释', () => {
+  const json = '{\n  "url": "https://a.example/b",\n  "t": "带 // 的文案"\n}';
+  assert.deepEqual(findRawHan(maskNonProse(json, '.json')).map((h) => h.line), [3]);
+});
+
+test('遮蔽等长:.vue 与 .json 均保持长度与行数', () => {
+  for (const [src, ext] of [['<template><p>甲</p></template>', '.vue'], ['{"k":"乙"}', '.json']]) {
+    const m = maskNonProse(src, ext);
+    assert.equal(m.length, src.length);
+    assert.equal(m.split('\n').length, src.split('\n').length);
+  }
+});
