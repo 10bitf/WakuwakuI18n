@@ -21,8 +21,14 @@ const FILE_JS_RE = /^[^\S\n]*\/\/[^\S\n]*i18n-exempt:[^\S\n]*(.*)$/m;
 // 标记的整段匹配([start, end))在 masked 的同一区间必须全是空白,才算「确实写在真注释里」。
 // masked 与 src 等长且逐字符位置对齐(lint-raw.js 的遮蔽契约),两种正则的匹配本身都不跨行,
 // 直接按字符偏移去 masked 上取同一段来看即可。
-function markerInComment(masked, start, end) {
+function markerInComment(masked, src, start, end) {
   if (masked == null) return true; // 未传 masked:向后兼容,不做词法校验
+  // 位置核验的前提是两串逐字符对齐。长度不一致说明调用方传错了(遮蔽契约是等长),
+  // 此时**必须抛错而不是退回宽松**——静默降级只会让豁免更容易生效,方向正好错在
+  // 最不该错的地方(豁免误开=给漏检开后门)。
+  if (String(masked).length !== String(src).length) {
+    throw new Error('exempt: masked 与 src 长度不一致,无法核验标记位置(遮蔽必须等长)');
+  }
   return /^\s*$/.test(String(masked).slice(start, end));
 }
 
@@ -33,7 +39,7 @@ export function fileExemptReason(src, masked) {
   const head = s.split('\n').slice(0, 3).join('\n');
   const m = FILE_HTML_RE.exec(head) || FILE_JS_RE.exec(head);
   if (!m) return null;
-  if (!markerInComment(masked, m.index, m.index + m[0].length)) return null; // 标记躲在字符串/伪注释里:不生效
+  if (!markerInComment(masked, s, m.index, m.index + m[0].length)) return null; // 标记躲在字符串/伪注释里:不生效
   const reason = m[1].trim();
   return reason || null;
 }
@@ -52,7 +58,7 @@ export function collectLineExemptions(src, masked) {
       const reason = m[1].trim();
       const start = offset + m.index;
       const end = start + m[0].length;
-      if (reason && markerInComment(masked, start, end)) map.set(idx + 1, reason);
+      if (reason && markerInComment(masked, s, start, end)) map.set(idx + 1, reason);
     }
     offset += line.length + 1; // +1 补回 split 吃掉的 '\n';末行会多算一位,但已无后续行可用,无副作用
   });
