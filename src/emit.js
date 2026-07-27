@@ -19,3 +19,24 @@ export function buildModuleText({ tables, locales, coreSrc, stamp }) {
     '',
   ].join('\n');
 }
+
+// 按命名空间白名单过滤 loadTables 的结果。key 第一段即命名空间(load.js 的 flatten 用
+// 文件名当 prefix 保证这一点)。namespaces 为空/未定义时原样返回——不填白名单 = 全部命名空间
+// 都打进产物,这是多数端(如官网)要的默认行为;小程序等需要瘦身、避免夹带不相关文案的端
+// 才显式声明白名单。白名单里写了不存在的命名空间不报错、也不产生空条目——纯字符串前缀
+// 比对,查无自然为空。
+export function filterNamespaces(tables, namespaces) {
+  if (!namespaces || !namespaces.length) return tables;
+  const allow = new Set(namespaces);
+  const out = {};
+  for (const loc of Object.keys(tables)) {
+    const table = {};
+    for (const key of Object.keys(tables[loc])) {
+      const dot = key.indexOf('.');
+      const ns = dot === -1 ? key : key.slice(0, dot);
+      if (allow.has(ns)) table[key] = tables[loc][key];
+    }
+    out[loc] = table;
+  }
+  return out;
+}

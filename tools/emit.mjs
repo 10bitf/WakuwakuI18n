@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadTables } from '../src/load.js';
-import { buildModuleText } from '../src/emit.js';
+import { buildModuleText, filterNamespaces } from '../src/emit.js';
 
 const FRAMEWORK_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -13,8 +13,10 @@ async function main() {
   const cfg = (await import(pathToFileURL(path.join(root, 'i18n.config.mjs')).href)).default;
   const out = cfg.emit && cfg.emit.out;
   if (!out) { console.error('✗ i18n.config.mjs 缺 emit.out(产物输出路径)'); process.exit(1); }
+  const namespaces = cfg.emit && cfg.emit.namespaces;
 
-  const tables = loadTables(path.join(root, 'i18n'));
+  const rawTables = loadTables(path.join(root, 'i18n'));
+  const tables = filterNamespaces(rawTables, namespaces);
   const locales = Object.keys(tables);
   const coreSrc = fs.readFileSync(path.join(FRAMEWORK_ROOT, 'src', 'core.js'), 'utf8');
   const text = buildModuleText({ tables, locales, coreSrc, stamp: new Date().toISOString() });

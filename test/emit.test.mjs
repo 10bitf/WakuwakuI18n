@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildModuleText } from '../src/emit.js';
+import { buildModuleText, filterNamespaces } from '../src/emit.js';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CORE_SRC = fs.readFileSync(path.join(REPO, 'src', 'core.js'), 'utf8');
@@ -46,4 +46,29 @@ test('产物是合法 ESM 且导出可用:makeT 能取词、能插值、能回�
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('filterNamespaces:白名单生效,只留声明的命名空间', () => {
+  const tables = {
+    zh: { 'common.ok': '确定', 'app.hi': '你好', 'site.about': '关于我们' },
+    en: { 'common.ok': 'OK', 'app.hi': 'Hi', 'site.about': 'About' },
+  };
+  const out = filterNamespaces(tables, ['common', 'app']);
+  assert.deepEqual(out, {
+    zh: { 'common.ok': '确定', 'app.hi': '你好' },
+    en: { 'common.ok': 'OK', 'app.hi': 'Hi' },
+  });
+});
+
+test('filterNamespaces:namespaces 不填时原样返回全部命名空间', () => {
+  const tables = { zh: { 'common.ok': '确定', 'site.about': '关于我们' } };
+  assert.deepEqual(filterNamespaces(tables, undefined), tables);
+  assert.deepEqual(filterNamespaces(tables, []), tables);
+});
+
+test('filterNamespaces:白名单里写了不存在的命名空间不报错、不产生空条目', () => {
+  const tables = { zh: { 'common.ok': '确定' } };
+  const out = filterNamespaces(tables, ['common', 'nope']);
+  assert.deepEqual(out, { zh: { 'common.ok': '确定' } });
+  assert.equal(Object.keys(out.zh).includes('nope'), false);
 });

@@ -34,6 +34,10 @@ Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI1
    ```javascript
    emit: { out: 'src/i18n/generated.js' }
    ```
+   如果 `i18n/` 下还有官网或其它端专用的命名空间(如 `site`),加 `emit.namespaces` 白名单把它们挡在小程序包外;不填则全部命名空间都打进去:
+   ```javascript
+   emit: { out: 'src/i18n/generated.js', namespaces: ['common', 'app'] }
+   ```
 2. package.json 加脚本与构建钩子:
    ```json
    "i18n:emit": "node node_modules/wakuwaku-i18n/tools/emit.mjs",
