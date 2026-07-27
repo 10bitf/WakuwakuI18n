@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { stripComments, findRawHan } from '../src/lint-raw.js';
+import { maskNonProse, findRawHan } from '../src/lint-raw.js';
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'i18n', '.git', '.astro']);
 
@@ -18,11 +18,11 @@ async function main() {
       if (SKIP_DIRS.has(f)) continue;
       const fp = path.join(dir, f);
       if (fs.statSync(fp).isDirectory()) { walk(fp); continue; }
-      if (!exts.includes(path.extname(f))) continue;
-      // 行号按剥完注释后的文本计;跨行块注释(/* */ 与 <!-- --> 均适用)整段剥除会让其后内容的
-      // 报告行号相对原文件小幅前移——行号仅供人找位置,命中判定不受影响。
-      const cleaned = stripComments(fs.readFileSync(fp, 'utf8'));
-      for (const h of findRawHan(cleaned)) {
+      const ext = path.extname(f);
+      if (!exts.includes(ext)) continue;
+      // 区域感知等长遮蔽:按扩展名把内容交给对应管线,遮蔽后行号与原文完全一致。
+      const masked = maskNonProse(fs.readFileSync(fp, 'utf8'), ext);
+      for (const h of findRawHan(masked)) {
         console.log(`  \x1b[31m✗\x1b[0m ${path.relative(root, fp)}:${h.line}: ${h.text}`);
         bad++;
       }
