@@ -9,8 +9,12 @@ Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI1
    ```javascript
    export default {
      locales: ['zh'],
-     scan: [{ dir: 'src', exts: ['.astro', '.ts'] }],   // t() 与 key 字面量采集范围
-     rawLint: { dirs: ['src/pages'], exts: ['.astro'] }, // 裸中文扫描范围
+     scan: [{ dir: 'src', exts: ['.astro', '.ts'] }],
+     rawLint: {
+       dirs: ['src/pages'],
+       exts: ['.astro'],
+       exempt: false,   // 默认零豁免;设 true 才启用下面的豁免标记
+     },
    }
    ```
 3. package.json:
@@ -78,6 +82,23 @@ import { loadTables } from 'wakuwaku-i18n/load'           // Node-only
 
 同一页里同义的两个 key 可以合并;**不同页面即使当前逐字相同也不要强行合并** ——
 两处"返回首页"在英文版大概率会分开写。
+
+## 豁免(opt-in,默认关闭)
+
+`rawLint.exempt: true` 才启用。**只用来表达"这句根本不是用户可见文案"**(调试页、
+法务长文档正文、内部枚举值、诊断串、首帧兜底配置)——不是"这句还没来得及迁"。
+后者是迁移进度白名单,本框架不支持:它本该随迁移完成清空,实际只会越拖越长。
+
+| 形态 | 写法 | 生效范围 |
+|---|---|---|
+| 文件级 | 最前三行写 `<!-- i18n-exempt: 理由 -->` 或 `// i18n-exempt: 理由` | 整份跳过 |
+| 行级 | 与命中**同行**写 `<!-- i18n-exempt-line: 理由 -->` 或 `// i18n-exempt-line: 理由` | 该行 |
+
+**理由必填,空理由不生效。** 每次检查都会打印豁免全量清单;`--summary` 只打合计
+(给 pre-push 这类每次都跑的场景,免得刷屏到没人看),命中清单任何模式下都照打。
+
+行级豁免没有机械校验,天然有"顺手加一行就绕过"的引力。启用方建议把当前条数钉成
+断言常量(条数一变就必须有人改数字并复核新增的每一条),否则它会悄悄长成白名单。
 
 ## 已知限制
 
