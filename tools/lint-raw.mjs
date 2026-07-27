@@ -14,7 +14,8 @@ async function main() {
   const summaryOnly = process.argv.includes('--summary');
   const root = process.cwd();
   const cfg = (await import(pathToFileURL(path.join(root, 'i18n.config.mjs')).href)).default;
-  const { dirs, exts, exempt: exemptEnabled = false } = cfg.rawLint;
+  const { dirs, exts } = cfg.rawLint;
+  const exemptEnabled = cfg.rawLint.exempt === true;
 
   const hits = [], lineExempt = [], fileExempt = [];
   const walk = (dir) => {
@@ -28,14 +29,16 @@ async function main() {
       const rel = path.relative(root, fp);
       const src = fs.readFileSync(fp, 'utf8');
 
+      // 区域感知等长遮蔽:遮蔽后行号与原文完全一致。先遮蔽再判豁免——文件级豁免要靠
+      // masked 校验标记是否真躲在注释里(见 exempt.js),顺序不能倒。
+      const masked = maskNonProse(src, ext);
       if (exemptEnabled) {
-        const reason = fileExemptReason(src);
+        const reason = fileExemptReason(src, masked);
         if (reason) { fileExempt.push({ rel, reason }); continue; }   // 整份跳过,但理由要能读出来
       }
-      // 区域感知等长遮蔽:遮蔽后行号与原文完全一致
-      const raw = findRawHan(maskNonProse(src, ext)).map((h) => ({ ...h, rel }));
+      const raw = findRawHan(masked).map((h) => ({ ...h, rel }));
       if (!exemptEnabled) { hits.push(...raw); continue; }
-      const r = splitByLineExemption(src, raw);
+      const r = splitByLineExemption(src, raw, masked);
       hits.push(...r.hits);
       lineExempt.push(...r.exempt);
     }

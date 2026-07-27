@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { maskNonProse, findRawHan } from '../src/lint-raw.js';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const LINT_RAW_CLI = path.join(REPO_ROOT, 'tools', 'lint-raw.mjs');
 
 // ---------- findRawHan 语义不变(逐行、只认汉字、假名/拉丁放行、行号从 1 起) ----------
 test('findRawHan:只认汉字;假名/拉丁放行;行号从 1 起', () => {
@@ -295,4 +303,83 @@ test('遮蔽等长:.vue 与 .json 均保持长度与行数', () => {
     assert.equal(m.length, src.length);
     assert.equal(m.split('\n').length, src.split('\n').length);
   }
+});
+
+// ==================== 评审 Important 修复 1:opt-in 门闩必须严格相等 ====================
+// tools/lint-raw.mjs 之前用 `exempt: exemptEnabled = false` 解构后按 truthy 判断,
+// exempt: 'false'(字符串)会被当真,误开豁免。改为 `cfg.rawLint.exempt === true` 后,
+// 只有布尔 true 才生效——这一条只能在 CLI 层验证,起子进程实测。
+
+test('CLI 回归:rawLint.exempt: \'false\'(字符串)不得误开豁免,裸中文仍照报', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wkwk-lintraw-cli-'));
+  try {
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'i18n.config.mjs'),
+      "export default { locales: ['zh'], scan: [], rawLint: { dirs: ['src'], exts: ['.js'], exempt: 'false' } };\n",
+      'utf8');
+    // 文件头带一个本来会生效的文件级豁免标记——如果门闩误开,这份文件会被整份跳过、
+    // exit 0;门闩收紧后 exempt 分支根本不会被进入,标记不起任何作用,裸中文必须照报。
+    fs.writeFileSync(path.join(root, 'src', 'a.js'),
+      '// i18n-exempt: 测试用例\nconst s = "中文文案";\n', 'utf8');
+
+    const r = spawnSync(process.execPath, [LINT_RAW_CLI], { cwd: root, encoding: 'utf8' });
+    assert.equal(r.status, 1, 'exempt: "false" 是字符串,不是 true,不应整份豁免跳过');
+    assert.match(r.stdout, /中文文案/, '裸中文必须被检出,不能被误开的豁免吞掉');
+    assert.doesNotMatch(r.stdout, /整份豁免/, '不应打印任何豁免——门闩本就没打开');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CLI 回归:rawLint.exempt: true(布尔)按预期正常开启豁免', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wkwk-lintraw-cli-'));
+  try {
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'i18n.config.mjs'),
+      "export default { locales: ['zh'], scan: [], rawLint: { dirs: ['src'], exts: ['.js'], exempt: true } };\n",
+      'utf8');
+    fs.writeFileSync(path.join(root, 'src', 'a.js'),
+      '// i18n-exempt: 测试用例\nconst s = "中文文案";\n', 'utf8');
+
+    const r = spawnSync(process.execPath, [LINT_RAW_CLI], { cwd: root, encoding: 'utf8' });
+    assert.equal(r.status, 0, 'exempt: true 时同样的文件应被整份豁免,exit 0');
+    assert.match(r.stdout, /整份豁免/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ==================== 评审 Important 修复 2:畸形 JSON 三处 fail-safe ====================
+// maskJsonNonProse 对"拿不准"的情形原先会静默扩大遮蔽面,吞掉中文。三处都改成
+// fail-safe(宁可误报不可漏检)后,以下畸形输入里的中文必须仍被检出。
+
+test('fail-safe JSON 1:键位字符串未闭合(跨行)不再遮到 EOF,两行中文都命中', () => {
+  const src = '{\n  "断头 甲文案\n  乙文案独立一行\n}';
+  const hits = findRawHan(maskNonProse(src, '.json'));
+  assert.ok(hits.length >= 1, '断头字符串后的中文不应被静默吞掉');
+  const texts = hits.map((h) => h.text).join('\n');
+  assert.match(texts, /甲文案/);
+  assert.match(texts, /乙文案独立一行/);
+});
+
+test('fail-safe JSON 2:缺冒号时不当键遮蔽,值中文命中', () => {
+  const src = '{"a" "中文值"}';
+  const hits = findRawHan(maskNonProse(src, '.json'));
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].text, /中文值/);
+});
+
+test('fail-safe JSON 3:未闭合块注释不再遮到 EOF,注释里的中文照报', () => {
+  const src = '{\n  /* 没闭合\n  "b": "中文值"\n}';
+  const hits = findRawHan(maskNonProse(src, '.json'));
+  assert.ok(hits.length >= 1, '未闭合块注释后的中文不应被静默吞掉');
+  assert.match(hits.map((h) => h.text).join('\n'), /中文值/);
+});
+
+test('fail-safe JSON:三处修复不影响合法 JSON 的既有行为(键遮/值报/正常块注释遮)', () => {
+  const src = '{\n  "键": "值文案",\n  /* 正常闭合的注释:中文 */\n  "c": "c值"\n}';
+  const hits = findRawHan(maskNonProse(src, '.json'));
+  assert.deepEqual(hits.map((h) => h.line), [2, 4]);
+  assert.ok(!hits.some((h) => h.text.includes('键')), '键仍应被遮蔽');
+  assert.ok(!hits.some((h) => h.text.includes('注释')), '正常闭合的块注释仍应被遮蔽');
 });

@@ -314,6 +314,9 @@ function maskStyleCssComments(code) {
 // JSON 的键也是带引号的字符串,拿广义"任意字符串字面量"去扫会把键一并抓走,而键从不是用户可见文案。
 // 注释遮蔽与键值判定放在**同一趟**里做:分趟会重蹈"各步骤分词不同步"的覆辙
 // (字符串里的 // 被当注释、注释里的引号扰乱键值判定,两个方向都会静默扩大遮蔽面)。
+// 与脚本区 tokenizer 同一 fail-safe 方向,三处拿不准一律不遮蔽:字符串遇换行未闭合就止步
+// (不跨行吞下一句)、键位字符串其后没有冒号就当值处理(不是键就不该被遮蔽)、块注释到 EOF
+// 都找不到 */ 就放弃当注释(按普通字符继续,原文照报)。
 function maskJsonNonProse(src) {
   const out = src.split('');
   const blank = (s, e) => { for (let k = s; k < e; k++) if (out[k] !== '\n') out[k] = ' '; };
@@ -328,7 +331,8 @@ function maskJsonNonProse(src) {
     }
     if (c === '/' && src[i + 1] === '*') {          // JSONC 块注释
       let e = i + 2; while (e < n && !(src[e] === '*' && src[e + 1] === '/')) e++;
-      e = Math.min(n, e + 2); blank(i, e); i = e; continue;
+      if (e < n) { blank(i, e + 2); i = e + 2; continue; }
+      // 未闭合:保守放弃,按普通字符继续扫描,不遮蔽(fail-safe:宁可误报,不可静默漏检)
     }
     if (c === '{') { stack.push({ type: 'obj', key: null, expectKey: true }); i++; continue; }
     if (c === '[') { stack.push({ type: 'arr', key: null, expectKey: false }); i++; continue; }
@@ -339,13 +343,21 @@ function maskJsonNonProse(src) {
       const q = c, start = i;
       i++;
       let value = '';
+      let terminated = false;
       while (i < n) {
         if (src[i] === '\\') { value += src[i + 1] || ''; i += 2; continue; }
-        if (src[i] === q) { i++; break; }
+        if (src[i] === q) { i++; terminated = true; break; }
+        if (src[i] === '\n') break;                 // 不跨行:止于换行,不吞后续行(fail-safe,镜像脚本区 tokenizer)
         value += src[i]; i++;
       }
+      if (!terminated) continue;                     // 未闭合:保守放弃,不遮蔽(fail-safe)
       const top = stack[stack.length - 1];
-      if (top && top.type === 'obj' && top.expectKey) { top.key = value; blank(start, i); continue; }  // 键:遮蔽
+      if (top && top.type === 'obj' && top.expectKey) {
+        let p = i;
+        while (p < n && /\s/.test(src[p])) p++;
+        if (src[p] === ':') { top.key = value; blank(start, i); continue; }  // 键位字符串且其后确有冒号:遮蔽
+        // 其后没有冒号:不是真正的键,按值处理(落到下面)
+      }
       // 值:键路径上任一段以 _ 开头(_note 这类给人看的说明)整棵跳过,与 load.js 对 _ 的口径一致
       const keyPath = stack.filter((f) => f.type === 'obj').map((f) => f.key).filter((k) => k != null);
       if (keyPath.some((k) => k.startsWith('_'))) blank(start, i);
