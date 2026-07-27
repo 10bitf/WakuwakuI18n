@@ -33,7 +33,11 @@ Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI1
 ```javascript
 import { makeT, resolveLocale } from 'wakuwaku-i18n'      // 环境无关
 import { loadTables } from 'wakuwaku-i18n/load'           // Node-only
+import { scanFiles } from 'wakuwaku-i18n/scan'            // Node-only:裸中文遍历+豁免过滤,tools/lint-raw.mjs 的 CLI 就是它的薄封装
+import { fileExemptReason, splitByLineExemption } from 'wakuwaku-i18n/exempt' // Node-only:豁免标记的识别与过滤
 ```
+
+消费方若要自建刹车点(例如钉住豁免条数的测试),按包名 import `wakuwaku-i18n/scan` 而不是拿相对路径伸进 `node_modules` 挖源码——那样会绕过 exports、依赖物理布局,npm 用 symlink 时会碎。
 
 ## 规矩（与 Photoman 一致）
 

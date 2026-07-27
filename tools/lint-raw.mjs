@@ -2,13 +2,13 @@
 // 豁免是 opt-in:仅当 i18n.config.mjs 的 rawLint.exempt === true 才生效(默认零豁免)。
 // --summary 只打合计行(给 pre-push 之类每次都跑的场景,免得豁免清单刷屏到没人看),
 // 命中清单任何模式下都照打——那是要拿去修的。
-import fs from 'node:fs';
+//
+// 本文件只负责:读 config、调 src/scan.js 的 scanFiles 做遍历与豁免过滤、打印、决定 exit code。
+// 遍历/遮蔽/豁免判定的实际逻辑在 src/scan.js——CLI 与消费方(按包名 import 'wakuwaku-i18n/scan')
+// 共用同一份实现,不再各存一份会分叉的复制品。
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { maskNonProse, findRawHan } from '../src/lint-raw.js';
-import { fileExemptReason, splitByLineExemption } from '../src/exempt.js';
-
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'i18n', '.git', '.astro', 'unpackage']);
+import { scanFiles } from '../src/scan.js';
 
 async function main() {
   const summaryOnly = process.argv.includes('--summary');
@@ -17,33 +17,7 @@ async function main() {
   const { dirs, exts } = cfg.rawLint;
   const exemptEnabled = cfg.rawLint.exempt === true;
 
-  const hits = [], lineExempt = [], fileExempt = [];
-  const walk = (dir) => {
-    if (!fs.existsSync(dir)) return;
-    for (const f of fs.readdirSync(dir)) {
-      if (SKIP_DIRS.has(f)) continue;
-      const fp = path.join(dir, f);
-      if (fs.statSync(fp).isDirectory()) { walk(fp); continue; }
-      const ext = path.extname(f);
-      if (!exts.includes(ext)) continue;
-      const rel = path.relative(root, fp);
-      const src = fs.readFileSync(fp, 'utf8');
-
-      // 区域感知等长遮蔽:遮蔽后行号与原文完全一致。先遮蔽再判豁免——文件级豁免要靠
-      // masked 校验标记是否真躲在注释里(见 exempt.js),顺序不能倒。
-      const masked = maskNonProse(src, ext);
-      if (exemptEnabled) {
-        const reason = fileExemptReason(src, masked);
-        if (reason) { fileExempt.push({ rel, reason }); continue; }   // 整份跳过,但理由要能读出来
-      }
-      const raw = findRawHan(masked).map((h) => ({ ...h, rel }));
-      if (!exemptEnabled) { hits.push(...raw); continue; }
-      const r = splitByLineExemption(src, raw, masked);
-      hits.push(...r.hits);
-      lineExempt.push(...r.exempt);
-    }
-  };
-  for (const d of dirs) walk(path.resolve(root, d));
+  const { hits, fileExempt, lineExempt } = scanFiles({ root, dirs, exts, exempt: exemptEnabled });
 
   for (const h of hits) console.log(`  \x1b[31m✗\x1b[0m ${h.rel}:${h.line}: ${h.text}`);
 
