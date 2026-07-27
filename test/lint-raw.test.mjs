@@ -127,3 +127,143 @@ test('未知扩展名:保守按模板区处理,HTML 注释里的中文不命中'
   const hits = findRawHan(maskNonProse(src, '.unknown'));
   assert.deepEqual(hits.map((h) => h.line), [2]);
 });
+
+// ==================== 对抗性回归(独立评审实测:四类静默漏检 + 三类误报) ====================
+// 对抗 1-8 断言"必须命中且行号正确"——漏检=未翻译文案静默上线,最高危;
+// 对抗 9-11 断言"必须不命中"——硬卡无豁免出口,误报=构建被永久拦死。
+
+test('对抗1:split(/\\//) 的正则内 \\/ 不被当行注释起点,同行字符串中文命中', () => {
+  const src = 'const parts = path.split(/\\//); const msg = "出错文案";';
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].line, 1);
+  assert.match(hits[0].text, /出错文案/);
+});
+
+test('对抗2:/^\\/\\// 这类正则不吞后续,同行字符串中文命中', () => {
+  const src = 'const re = /^\\/\\//; const s = "真文案";';
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].line, 1);
+  assert.match(hits[0].text, /真文案/);
+});
+
+test('对抗3:正则里的 \\/* 不被当块注释起点跨行吞行,第 2 行中文命中', () => {
+  const src = 'const re = /a\\/*/;\nconst s = "文案一";\n/* 注释中文 */';
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [2]);
+  assert.match(hits[0].text, /文案一/);
+});
+
+test('对抗4:字符串内部的 "t(" 不触发实参遮蔽(否则遮到文件尾),后续行中文命中', () => {
+  const src = 'const s = "t(";\nconst b = "真文案";';
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [2]);
+  assert.match(hits[0].text, /真文案/);
+});
+
+test('对抗5:字符串内部的 "console.log(" 不触发实参遮蔽,两行中文都命中', () => {
+  const src = 'const s = "见 console.log(";\nconst b = "另一句文案";';
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [1, 2]);
+  assert.match(hits[0].text, /见/);
+  assert.match(hits[1].text, /另一句文案/);
+});
+
+test('对抗6:普通字符串/模板串的内容形如 t(…) 时是真文案,必须命中', () => {
+  const src = 'const s = "t(中文)";\nconst v = `t(中文键)`;';
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [1, 2]);
+  assert.match(hits[0].text, /中文/);
+  assert.match(hits[1].text, /中文键/);
+});
+
+test('对抗7:字符串内的 "import" 字样不触发路径遮蔽跨行吞行,后续行中文命中', () => {
+  const src = 'const s = "请先 import";\nconst m = `中文模板`;\nconst z = "x";';
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [1, 2]);
+  assert.match(hits[1].text, /中文模板/);
+});
+
+test('对抗8:正则里的单引号不让字符串跟踪失同步,后续字符串中文命中', () => {
+  const src = "const re = /'/; const s = 'a // 中文文案';";
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].line, 1);
+  assert.match(hits[0].text, /中文文案/);
+});
+
+test('对抗9:return/=>/typeof 之后的正则被识别为正则,不误报', () => {
+  assert.deepEqual(findRawHan(maskNonProse('function f(s) {\n  return /[一-鿿]/.test(s);\n}', '.js')), []);
+  assert.deepEqual(findRawHan(maskNonProse('const g = (x) => /[一-鿿]/.test(x);', '.js')), []);
+  assert.deepEqual(findRawHan(maskNonProse('const b = typeof /中文/;', '.js')), []);
+});
+
+test('对抗10:多行 import(} from "…" 形态)的路径被遮蔽,不误报', () => {
+  const src = 'import {\n  a,\n} from "./模块.js";';
+  assert.deepEqual(findRawHan(maskNonProse(src, '.js')), []);
+});
+
+test('对抗11:正则后的行注释仍被识别为注释,注释中文不误报', () => {
+  const src = "const re = /'/; const s = 1; // 注释中文";
+  assert.deepEqual(findRawHan(maskNonProse(src, '.js')), []);
+});
+
+// ==================== 既有正确行为锁定(评审实测通过,不许回归) ====================
+
+test('既有:t() 嵌套括号整体遮蔽;实参内含括号的字符串不让遮蔽越界', () => {
+  assert.deepEqual(findRawHan(maskNonProse('t("k", (a(b)), "中文");', '.js')), []);
+  const hits = findRawHan(maskNonProse('t("k(((甲甲", x); const s = "乙乙";', '.js'));
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].text, /乙乙/);
+  assert.doesNotMatch(hits[0].text, /甲甲/);
+});
+
+test('既有:console 跨行 callee 与跨行实参整体遮蔽', () => {
+  assert.deepEqual(findRawHan(maskNonProse('console\n.warn("第一行",\n"第二行");', '.js')), []);
+});
+
+test('既有:除法链不误遮;三元中的两个正则正确遮', () => {
+  const hits = findRawHan(maskNonProse('const r = a / b / c; const s = "文案";', '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [1]);
+  assert.match(hits[0].text, /文案/);
+  assert.deepEqual(findRawHan(maskNonProse('const m = x ? /中/ : /文/;', '.js')), []);
+});
+
+test('既有:模板串 ${} 内是代码(内部字符串的 // 不是注释),串体真文案命中', () => {
+  const hits = findRawHan(maskNonProse('const x = `${a("//")}真文案`;', '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [1]);
+  assert.match(hits[0].text, /真文案/);
+});
+
+test('既有:嵌套模板串正确闭合,内外层文案都命中', () => {
+  const hits = findRawHan(maskNonProse('const x = `外层${ `内层中文` }尾`;', '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [1]);
+});
+
+test('既有:obj.t("键名") 遮;format("格式中文") 不遮', () => {
+  assert.deepEqual(findRawHan(maskNonProse('obj.t("键名");', '.js')), []);
+  const hits = findRawHan(maskNonProse('format("格式中文");', '.js'));
+  assert.equal(hits.length, 1);
+});
+
+test('既有:串尾双反斜杠正确闭合,行尾注释仍是注释,次行中文命中', () => {
+  const src = 'const s = "abc\\\\"; // 尾注中文\nconst t2 = "中文";';
+  const hits = findRawHan(maskNonProse(src, '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [2]);
+});
+
+test('既有:.ts 的 import type 路径遮蔽', () => {
+  assert.deepEqual(findRawHan(maskNonProse('import type { T } from "./类型.js";', '.ts')), []);
+});
+
+test('fail-safe:不闭合的 t( 保守放弃遮蔽——宁可误报,不可静默漏检', () => {
+  const hits = findRawHan(maskNonProse('t("中文键", x\n', '.js'));
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].text, /中文键/);
+});
+
+test('fail-safe:export 无 from 的字符串是真文案,不当路径遮蔽', () => {
+  const hits = findRawHan(maskNonProse('export const s = "中文导出值";\nexport default "默认文案";', '.js'));
+  assert.deepEqual(hits.map((h) => h.line), [1, 2]);
+});

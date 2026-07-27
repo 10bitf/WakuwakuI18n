@@ -1,7 +1,7 @@
 // 「禁止裸中文」检查纯逻辑。tools/lint-raw.mjs 是薄 CLI 入口,这里是可被 node --test 直测的库。
 //
-// 架构:区域感知等长遮蔽。按文件扩展名把内容切成不同区域,各区域只遮蔽"确定不是用户可见文案"
-// 的部分(注释、正则字面量、import/export 路径、t()/console() 的整个实参……),遮蔽用等长空格
+// 架构:区域感知等长遮蔽,脚本区为单趟词法扫描(tokenizer)。
+// 按文件扩展名把内容切成不同区域,各区域只遮蔽"确定不是用户可见文案"的部分,遮蔽用等长空格
 // 逐字符替换而不是删除——原文行号与列偏移全程不变。遮蔽完之后用 findRawHan 逐行找汉字即可。
 //
 // 区域划分:
@@ -11,153 +11,293 @@
 //   其余(模板区,默认)                            只遮蔽 HTML 注释(// 绝不当模板区的注释起点)
 // 非标签类文件(.js/.ts/.mjs/.cjs)整个文件按脚本区处理;扩展名未知时按模板区保守处理。
 //
-// 脚本区遮蔽管线(逐字符状态机,不是"整文一把正则"):
-//   1. 字符串字面量('/"/`,含 \ 转义)整体跳过——字符串内部的 // 和 /* */ 不是注释起点(D1 根治点)。
-//   2. 真注释(// 到行尾、/* */ 跨行)遮蔽。
-//   3. 正则字面量 /…/flags 遮蔽(D3)——靠"/ 前一个非空白字符"启发式区分正则与除法。
-//   4. import/export 的路径字面量遮蔽(D5)。
-//   5. t(...) 与 console.*(...) 的整个实参遮蔽(D4)——括号深度匹配,期间跳过字符串。
+// 脚本区管线(单趟 tokenizer,不是多趟各自分词):
+//   1. 一次逐字符扫描产出 token 序列:string(单双引号与模板串字面段,模板 ${} 内部按代码
+//      递归处理)、comment(行/块)、regex(正则字面量)、code(其余)。每个 token 标注 [start, end)。
+//   2. 注释与正则的遮蔽直接由 token 得出——不再用正则去原文里找。
+//   3. t()/console() 实参与 import/export 路径的搜索只在"骨架视图"(字符串/注释/正则全部
+//      置空格后的纯代码结构)上进行——字符串内部的 "t(" / "import" / 括号不可能触发遮蔽。
+// 早期 pass 不再可能破坏后期 pass 才懂的语法结构:所有遮蔽共享同一份词法事实。
+//
+// Fail-safe 原则(必须保持):本检查是硬卡,漏检=未翻译文案静默上线(无人察觉),
+// 误报=构建失败(有人看见、能修)。因此所有"拿不准"的分支一律落在「不遮蔽」侧——
+// 宁可多报,不可少报。具体:括号不闭合的 t()/console() 放弃遮蔽;块注释不闭合当代码;
+// 字符串不闭合止于行尾;正则行内不闭合当除法;import/export 语句形状看不懂就不遮路径。
 
 const SCRIPT_ONLY_EXTS = new Set(['.js', '.ts', '.mjs', '.cjs']);
 
 const mask = (s) => s.replace(/[^\n]/g, ' ');
 
-// ---------- 脚本区 1+2:字符串边界感知 + 真注释遮蔽 ----------
-function maskComments(code) {
-  let out = '';
-  const n = code.length;
-  let i = 0;
-  while (i < n) {
-    const c = code[i], c2 = code[i + 1];
-    if (c === '/' && c2 === '/') {
-      while (i < n && code[i] !== '\n') { out += ' '; i++; }
-      continue;
-    }
-    if (c === '/' && c2 === '*') {
-      out += '  '; i += 2;
-      while (i < n && !(code[i] === '*' && code[i + 1] === '/')) {
-        out += code[i] === '\n' ? '\n' : ' ';
-        i++;
-      }
-      if (i < n) { out += '  '; i += 2; }
-      continue;
-    }
-    if (c === '\'' || c === '"' || c === '`') {
-      const q = c;
-      out += c; i++;
-      while (i < n) {
-        if (code[i] === '\\') { out += code[i] + (code[i + 1] || ''); i += 2; continue; }
-        if (code[i] === q) { out += code[i]; i++; break; }
-        out += code[i]; i++;
-      }
-      continue;
-    }
-    out += c; i++;
-  }
-  return out;
+// ---------- 脚本区单趟 tokenizer ----------
+
+// 正则 vs 除法:看前一个有意义 token(按词判断,不是按尾字符)。
+// 标识符/数字/字符串/正则等"值"之后、以及 ) ] } 之后按除法;
+// 下列关键字、以及运算符与 ( [ { , ; => 之后按正则。
+const REGEX_PREV_KEYWORDS = new Set([
+  'return', 'case', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete',
+  'void', 'throw', 'do', 'else', 'yield', 'await',
+]);
+
+function regexAllowed(prev) {
+  if (prev === null) return true; // 区域起点即表达式起点
+  if (prev.kind === 'value') return false;
+  if (prev.kind === 'word') return REGEX_PREV_KEYWORDS.has(prev.text);
+  return !(prev.text === ')' || prev.text === ']' || prev.text === '}');
 }
 
-// ---------- 脚本区 3:正则字面量遮蔽,区分正则与除法 ----------
-// 只在"/ 前一个有意义字符"处于明确不可能是除法左操作数结尾的位置时才当正则解析;
-// 标识符/数字/)/] 之后一律当除法,不解析——宁可漏遮蔽也不误伤除法表达式。
-function maskRegexLiterals(code) {
-  const REGEX_OK_PREV = new Set(['(', ',', '=', ':', '[', '!', '&', '|', '?', ';', '{', '}', '+', '-', '*', '%', '<', '>', '\n', '']);
-  const out = code.split('');
+// 从 i(指向 '/')尝试识别正则字面量,返回 token 结束位置(含 flags);
+// 行内未闭合返回 -1——正则字面量不能跨行,拿不准就当除法,不遮蔽(fail-safe)。
+function scanRegexLiteral(code, i) {
   const n = code.length;
+  let j = i + 1;
+  let inClass = false;
+  while (j < n) {
+    const c = code[j];
+    if (c === '\\') { j += 2; continue; }
+    if (c === '\n') return -1;
+    if (c === '[') { inClass = true; j++; continue; }
+    if (c === ']') { inClass = false; j++; continue; }
+    if (c === '/' && !inClass) {
+      j++;
+      while (j < n && /[a-zA-Z]/.test(code[j])) j++; // flags
+      return j;
+    }
+    j++;
+  }
+  return -1;
+}
+
+const WORD_CHAR = /[A-Za-z0-9_$]/;
+
+// 单趟逐字符扫描,产出 { type: 'string'|'comment'|'regex'|'code', start, end } 序列。
+// token 首尾相接覆盖全文;模板串的字面段是 string,${} 内部是正常代码(可含嵌套一切)。
+function tokenize(code) {
+  const n = code.length;
+  const tokens = [];
+  const push = (type, start, end) => {
+    if (end > start) tokens.push({ type, start: Math.max(0, start), end: Math.min(end, n) });
+  };
+
+  const tplStack = []; // 每层是一个 ${} 表达式的花括号深度计数
+  let prev = null;     // 前一个有意义 token:{ kind: 'word'|'punct'|'value', text? }
   let i = 0;
-  let prevSig = '';
+  let codeStart = 0;
+
+  // 模板字面段:从 from(指向 ` 或结束 ${} 的 })扫到 ` 收尾或下一个 ${。
+  const lexTemplateChunk = (from) => {
+    let j = from + 1;
+    while (j < n) {
+      const c = code[j];
+      if (c === '\\') { j += 2; continue; }
+      if (c === '`') { push('string', from, j + 1); prev = { kind: 'value' }; return j + 1; }
+      if (c === '$' && code[j + 1] === '{') {
+        push('string', from, j + 2); // 字面段含 ${ 结尾
+        tplStack.push({ depth: 0 });
+        prev = { kind: 'punct', text: '(' }; // ${ 之后是表达式起点,允许正则
+        return j + 2;
+      }
+      j++;
+    }
+    push('string', from, n); // 模板未闭合:字面段止于文件尾,不吞更多结构
+    prev = { kind: 'value' };
+    return n;
+  };
+
   while (i < n) {
     const c = code[i];
-    if (c === '\'' || c === '"' || c === '`') {
-      const q = c; i++;
-      while (i < n) {
-        if (code[i] === '\\') { i += 2; continue; }
-        if (code[i] === q) { i++; break; }
-        i++;
+    const c2 = code[i + 1];
+
+    if (c === '/' && c2 === '/') { // 行注释(字符串/正则内的 // 到不了这里)
+      push('code', codeStart, i);
+      let j = i + 2;
+      while (j < n && code[j] !== '\n') j++;
+      push('comment', i, j);
+      i = j; codeStart = i;
+      continue; // 注释不改变 prev
+    }
+
+    if (c === '/' && c2 === '*') {
+      let j = i + 2;
+      while (j < n && !(code[j] === '*' && code[j + 1] === '/')) j++;
+      if (j < n) {
+        push('code', codeStart, i);
+        push('comment', i, j + 2);
+        i = j + 2; codeStart = i;
+        continue;
       }
-      prevSig = q;
+      // 块注释不闭合:保守放弃,按普通代码字符继续(fail-safe:不遮蔽)
+      prev = { kind: 'punct', text: '/' };
+      i++;
       continue;
     }
-    if (c === '/' && REGEX_OK_PREV.has(prevSig)) {
-      let j = i + 1, inClass = false, closed = false;
+
+    if (c === '\'' || c === '"') {
+      push('code', codeStart, i);
+      let j = i + 1;
       while (j < n) {
-        const cj = code[j];
-        if (cj === '\\') { j += 2; continue; }
-        if (cj === '\n') break; // 未闭合,不是正则,回退当普通字符处理
-        if (cj === '[') { inClass = true; j++; continue; }
-        if (cj === ']') { inClass = false; j++; continue; }
-        if (cj === '/' && !inClass) { closed = true; break; }
+        if (code[j] === '\\') { j += 2; continue; }
+        if (code[j] === c) { j++; break; }
+        if (code[j] === '\n') break; // 字符串不闭合:止于行尾,不吞后续行(fail-safe)
         j++;
       }
-      if (closed && j > i + 1) {
-        let k = j + 1;
-        while (k < n && /[a-zA-Z]/.test(code[k])) k++; // 吞掉 flags
-        for (let m = i; m < k; m++) out[m] = code[m] === '\n' ? '\n' : ' ';
-        i = k; prevSig = '/';
-        continue;
-      }
+      push('string', i, j);
+      i = Math.min(j, n); codeStart = i;
+      prev = { kind: 'value' };
+      continue;
     }
-    out[i] = c;
-    if (!/\s/.test(c)) prevSig = c;
-    i++;
-  }
-  return out.join('');
-}
 
-// ---------- 脚本区 4:import/export 路径字面量遮蔽 ----------
-// import 覆盖 `import ... from "路径"`、`import "路径"`、`import("路径")`;
-// export 额外要求出现 from,避免把 `export const s = "中文导出值"` 这种真文案误当路径遮蔽掉。
-function maskImportPaths(code) {
-  const maskLit = (full, q, val) => {
-    const head = full.slice(0, full.length - (val.length + 2));
-    return head + q + mask(val) + q;
-  };
-  return code
-    .replace(/\bimport\b[^;\n'"`]*(['"`])((?:(?!\1)[^\\]|\\.)*)\1/g, maskLit)
-    .replace(/\bexport\b[^;\n'"`]*\bfrom\b[^;\n'"`]*(['"`])((?:(?!\1)[^\\]|\\.)*)\1/g, maskLit);
-}
+    if (c === '`') {
+      push('code', codeStart, i);
+      i = lexTemplateChunk(i);
+      codeStart = i;
+      continue;
+    }
 
-// ---------- 脚本区 5:t(...) / console.*(...) 整个实参遮蔽,括号深度匹配,期间跳过字符串 ----------
-function maskCallArgs(code, calleeRe) {
-  const re = new RegExp(calleeRe.source, 'g');
-  const out = code.split('');
-  let m;
-  re.lastIndex = 0;
-  while ((m = re.exec(code))) {
-    const openIdx = m.index + m[0].length - 1; // '(' 的位置
-    let depth = 1, j = openIdx + 1;
-    while (j < code.length && depth > 0) {
-      const c = code[j];
-      if (c === '\'' || c === '"' || c === '`') {
-        const q = c; j++;
-        while (j < code.length) {
-          if (code[j] === '\\') { j += 2; continue; }
-          if (code[j] === q) { j++; break; }
-          j++;
+    if (c === '}' && tplStack.length && tplStack[tplStack.length - 1].depth === 0) {
+      // ${} 表达式结束,回到模板字面段
+      push('code', codeStart, i);
+      tplStack.pop();
+      i = lexTemplateChunk(i);
+      codeStart = i;
+      continue;
+    }
+
+    if (c === '/') { // 上面排除了 // 与 /*,这里只剩正则或除法
+      if (regexAllowed(prev)) {
+        const end = scanRegexLiteral(code, i);
+        if (end !== -1) {
+          push('code', codeStart, i);
+          push('regex', i, end);
+          i = end; codeStart = i;
+          prev = { kind: 'value' };
+          continue;
         }
-        continue;
       }
+      prev = { kind: 'punct', text: '/' };
+      i++;
+      continue;
+    }
+
+    if (WORD_CHAR.test(c)) {
+      let j = i + 1;
+      while (j < n && WORD_CHAR.test(code[j])) j++;
+      prev = { kind: 'word', text: code.slice(i, j) };
+      i = j;
+      continue;
+    }
+
+    if (!/\s/.test(c)) {
+      if (c === '{' && tplStack.length) tplStack[tplStack.length - 1].depth++;
+      else if (c === '}' && tplStack.length) tplStack[tplStack.length - 1].depth--;
+      if (c === '=' && c2 === '>') { prev = { kind: 'punct', text: '=>' }; i += 2; }
+      else { prev = { kind: 'punct', text: c }; i++; }
+      continue;
+    }
+
+    i++; // 空白:prev 不变
+  }
+  push('code', codeStart, n);
+  return tokens;
+}
+
+// 等长遮蔽 [s, e):除换行外全部置空格。
+function maskRange(arr, code, s, e) {
+  const lim = Math.min(e, arr.length);
+  for (let m = Math.max(0, s); m < lim; m++) arr[m] = code[m] === '\n' ? '\n' : ' ';
+}
+
+// ---------- t(...) / console.*(...) 实参遮蔽:只在骨架上搜索与配对 ----------
+// 骨架里字符串/注释/正则都是空格:字符串内部的 "t(" 匹配不到,实参字符串里的括号也不参与配对。
+function maskCallArgs(skeleton, code, out, calleeRe) {
+  const re = new RegExp(calleeRe.source, 'g');
+  let m;
+  while ((m = re.exec(skeleton))) {
+    const openIdx = m.index + m[0].length - 1; // '(' 的位置
+    let depth = 1;
+    let j = openIdx + 1;
+    while (j < skeleton.length && depth > 0) {
+      const c = skeleton[j];
       if (c === '(') depth++;
       else if (c === ')') depth--;
       j++;
     }
-    for (let k = m.index; k < j && k < out.length; k++) {
-      out[k] = out[k] === '\n' ? '\n' : ' ';
-    }
+    if (depth === 0) maskRange(out, code, m.index, j);
+    // 括号不闭合:保守放弃,不遮蔽(fail-safe:宁可误报,不可静默漏检)
   }
-  return out.join('');
 }
 
 const T_CALL_RE = /\bt\(/;
 const CONSOLE_CALL_RE = /\bconsole\s*\.\s*\w+\s*\(/;
 
+// ---------- import/export 路径遮蔽:骨架上找关键字,按语句形状白名单逐字符前进 ----------
+// 支持跨行(多行 import 的 `} from "…"` 形态)与动态 import("路径")。
+// 白名单外的任何字符都表示"形状看不懂",立即放弃该语句,不遮蔽(fail-safe)。
+// export 必须先见 from 才认路径——`export const s = "中文导出值"`、`export default "文案"`
+// 是真文案,不遮。字符串位置一律以 token 表为准,不看骨架字符(骨架里字符串已是空格)。
+function maskImportPaths(skeleton, code, out, stringStarts) {
+  const kwRe = /\b(import|export)\b/g;
+  let m;
+  while ((m = kwRe.exec(skeleton))) {
+    // obj.import(...) 这类属性访问不是模块语句
+    let p = m.index - 1;
+    while (p >= 0 && /[ \t]/.test(skeleton[p])) p--;
+    if (p >= 0 && skeleton[p] === '.') continue;
+
+    const isExport = m[1] === 'export';
+    let j = m.index + m[1].length;
+    let sawFrom = false;
+    let sawAnything = false;
+    while (j < skeleton.length) {
+      const tok = stringStarts.get(j);
+      if (tok) {
+        // 到达字符串字面量:import 直跟字符串(副作用导入)或 from 之后的字符串才是路径
+        if (isExport ? sawFrom : (sawFrom || !sawAnything)) maskRange(out, code, tok.start, tok.end);
+        break;
+      }
+      const c = skeleton[j];
+      if (/\s/.test(c)) { j++; continue; } // 空白与被遮蔽的注释都可穿过
+      if (WORD_CHAR.test(c)) {
+        let k = j + 1;
+        while (k < skeleton.length && WORD_CHAR.test(skeleton[k])) k++;
+        if (skeleton.slice(j, k) === 'from') sawFrom = true;
+        sawAnything = true;
+        j = k;
+        continue;
+      }
+      if (c === '{' || c === '}' || c === ',' || c === '*') { sawAnything = true; j++; continue; }
+      if (c === '(' && !isExport && !sawAnything) {
+        // 动态 import("路径"):只认 ( 后紧邻(仅隔空白/已遮注释)的字符串字面量
+        let k = j + 1;
+        while (k < skeleton.length && !stringStarts.has(k) && /\s/.test(skeleton[k])) k++;
+        const arg = stringStarts.get(k);
+        if (arg) maskRange(out, code, arg.start, arg.end);
+        break;
+      }
+      break; // 白名单外的字符:形状看不懂,保守放弃(fail-safe)
+    }
+  }
+}
+
+// ---------- 脚本区总装 ----------
 function maskScriptRegion(code) {
-  let out = maskComments(code);
-  out = maskRegexLiterals(out);
-  out = maskImportPaths(out);
-  out = maskCallArgs(out, T_CALL_RE);
-  out = maskCallArgs(out, CONSOLE_CALL_RE);
-  return out;
+  const tokens = tokenize(code);
+  const out = code.split('');
+  const skeletonArr = code.split('');
+  const stringStarts = new Map(); // start -> token,字符串位置的唯一事实来源
+  for (const t of tokens) {
+    if (t.type === 'comment' || t.type === 'regex') {
+      maskRange(out, code, t.start, t.end);        // 注释/正则遮蔽直接由 token 得出
+      maskRange(skeletonArr, code, t.start, t.end);
+    } else if (t.type === 'string') {
+      maskRange(skeletonArr, code, t.start, t.end); // 骨架里字符串不可见,但产出里保留(候选文案)
+      stringStarts.set(t.start, t);
+    }
+  }
+  const skeleton = skeletonArr.join('');
+  maskCallArgs(skeleton, code, out, T_CALL_RE);
+  maskCallArgs(skeleton, code, out, CONSOLE_CALL_RE);
+  maskImportPaths(skeleton, code, out, stringStarts);
+  return out.join('');
 }
 
 // ---------- 模板区:只遮蔽 HTML 注释 ----------
