@@ -1,5 +1,7 @@
 # wakuwaku-i18n
 
+> 完整使用说明(接入步骤、配置与 API 契约表、硬卡判据、踩坑记录)见 [docs/USAGE.md](docs/USAGE.md);本 README 只做入口与速查。
+
 Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI18n, 各项目以 file: 依赖引用。设计见 D:\project\Wakuwaku\docs\superpowers\specs\2026-07-27-通用文案框架-design.md。
 
 ## 接入三件套
