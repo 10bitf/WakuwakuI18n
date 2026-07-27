@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const FALLBACK = 'zh';
-export const SKIP_DIRS = new Set(['node_modules', 'dist', 'i18n', '.git', '.astro']);
+export const SKIP_DIRS = new Set(['node_modules', 'dist', 'i18n', '.git', '.astro', 'unpackage']);
 export const placeholders = (s) => new Set([...String(s).matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]));
 export const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 

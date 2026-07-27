@@ -30,7 +30,13 @@ async function main() {
     : '';
 
   if (hits.length) {
-    console.log(`\x1b[31m✗ 裸中文 ${hits.length} 处——请入 i18n 表后经 t() 取词${exemptTail}\x1b[0m`);
+    console.log(`\x1b[31m✗ 裸中文 ${hits.length} 处${exemptTail}\x1b[0m`);
+    console.log('  两条出路,按这句中文的性质二选一:');
+    console.log('  ① 用户看得见的字 → 入 i18n 表,代码里改成 t(\'键\') 取词;');
+    console.log(exemptEnabled
+      ? '  ② 根本不是用户可见文案(内部枚举值/诊断串/配置兜底) → 就地加带理由的行级豁免:本行行尾写' +
+        '  // i18n-exempt-line: 理由  (.vue 模板区/.html 用 <!-- i18n-exempt-line: 理由 -->),理由不能为空。'
+      : '  ② 根本不是用户可见文案 → 本项目未开启行级豁免(i18n.config.mjs 的 rawLint.exempt !== true),只能按①处理。');
     process.exit(1);
   }
   console.log(`\x1b[32m✓\x1b[0m 无裸中文${exemptTail}`);
