@@ -97,3 +97,12 @@ test('splitByLineExemption 透传 masked:躲在字符串里的标记不生效,�
   assert.equal(r.exempt[0].line, 1);
   assert.equal(r.exempt[0].reason, '内部枚举');
 });
+
+test('CRLF 仓库:行级标记两种形态都要生效(Photoman 全仓 CRLF)', () => {
+  const js = 'const a = "枚举"; // i18n-exempt-line: 内部枚举\r\nconst b = 1;\r\n';
+  assert.equal(collectLineExemptions(js).get(1), '内部枚举', 'CRLF 下 // 形态不得失效');
+  const html = '<p>x</p> <!-- i18n-exempt-line: 首帧兜底 -->\r\n';
+  assert.equal(collectLineExemptions(html).get(1), '首帧兜底');
+  assert.equal(fileExemptReason('// i18n-exempt: 调试页\r\nrest'), '调试页');
+  assert.equal(collectLineExemptions('x // i18n-exempt-line:   \r\n').size, 0, 'CRLF 下空理由仍不生效');
+});

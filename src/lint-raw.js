@@ -345,7 +345,12 @@ function maskJsonNonProse(src) {
       let value = '';
       let terminated = false;
       while (i < n) {
-        if (src[i] === '\\') { value += src[i + 1] || ''; i += 2; continue; }
+        // 转义分支要先看被转义的那个字符是不是裸换行:`\` + 换行在 JSON/JSONC 里非法,
+        // 若照常 i+=2 跨过去,下面那条换行止损就够不着,又会一路吞到 EOF(漏检侧)。
+        if (src[i] === '\\') {
+          if (src[i + 1] === '\n' || src[i + 1] === undefined) break;
+          value += src[i + 1]; i += 2; continue;
+        }
         if (src[i] === q) { i++; terminated = true; break; }
         if (src[i] === '\n') break;                 // 不跨行:止于换行,不吞后续行(fail-safe,镜像脚本区 tokenizer)
         value += src[i]; i++;

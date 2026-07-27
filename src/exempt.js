@@ -46,7 +46,11 @@ export function fileExemptReason(src, masked) {
 
 // 行级只做「与命中同行」这一种形态。两种语法都认:模板区写 <!-- -->,脚本区写 //。
 const LINE_HTML_RE = /<!--[^\S\n]*i18n-exempt-line:[^\S\n]*(.*?)[^\S\n]*-->/;
-const LINE_JS_RE = /\/\/[^\S\n]*i18n-exempt-line:[^\S\n]*(.*)$/;
+// 结尾不写 `$`:JS 的 `$`(无 m 标志)只匹配字符串真末尾,而 `.` 不匹配 `\r`——
+// CRLF 文件按 '\n' 切行后每行尾都挂着 `\r`,`(.*)$` 于是永远匹配不上,
+// 该形态的行级豁免在 CRLF 仓库里会整体失效(Photoman 全仓 CRLF,正是它用得最多的写法)。
+// `.*` 本身就止于行终止符,`$` 在这里既多余又有害。
+const LINE_JS_RE = /\/\/[^\S\n]*i18n-exempt-line:[^\S\n]*(.*)/;
 
 export function collectLineExemptions(src, masked) {
   const s = String(src);

@@ -383,3 +383,14 @@ test('fail-safe JSON:三处修复不影响合法 JSON 的既有行为(键遮/值
   assert.ok(!hits.some((h) => h.text.includes('键')), '键仍应被遮蔽');
   assert.ok(!hits.some((h) => h.text.includes('注释')), '正常闭合的块注释仍应被遮蔽');
 });
+
+test('fail-safe JSON 4:反斜杠后紧跟裸换行(非法转义)止损不遮,中文照报', () => {
+  // '\\' 是一个反斜杠字面量,其后紧跟 '\n' 真换行 —— JSON/JSONC 都不接受这种转义。
+  // 若 escape 分支照常 i+=2 跨过去,下面那条换行止损就够不着,又会一路吞到 EOF(漏检侧)。
+  const bad = '{\n  "中文断头\\\n  更多中文": "v"\n}';
+  const hits = findRawHan(maskNonProse(bad, '.json'));
+  assert.deepEqual(hits.map((h) => h.line), [2, 3], '断头前后两行的中文都要照报');
+  // 对照组:合法的 \n 转义序列不受影响 —— 该字符串仍是合法的键,仍被遮蔽
+  const ok = '{\n  "中文键\\n续": "v"\n}';
+  assert.deepEqual(findRawHan(maskNonProse(ok, '.json')), [], '合法转义的键仍正常遮蔽');
+});
