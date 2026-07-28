@@ -110,6 +110,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import i18next from "i18next";
+import { withPreset } from "wakuwaku-i18n/i18next-preset";
 
 const I18N_DIR = fileURLToPath(new URL("../../i18n", import.meta.url));
 
@@ -130,16 +131,14 @@ function loadResources() {
   return resources;
 }
 
-await i18next.init({
+// 三条解析规则(nsSeparator / keySeparator / 单花括号)由 withPreset 统一提供 ——
+// 三端共用同一份,别在这里另抄一遍,抄了就会悄悄分叉且不报错。
+await i18next.init(withPreset({
   lng: "zh",
   fallbackLng: "zh",
   resources: loadResources(),
-  // 下面三条配错了症状都不明显:
-  nsSeparator: false,   // 关掉冒号命名空间解析,否则 'common.nav.home' 会被当成 ns:key 拆开
-  keySeparator: ".",
-  interpolation: { escapeValue: false, prefix: "{", suffix: "}" },  // 单花括号;转义交给 Astro
   parseMissingKeyHandler: (key) => { throw new Error(`缺文案 key: ${key}`); },
-});
+}));
 
 export const t = (key, vars) => i18next.t(key, vars);
 ```
@@ -230,23 +229,21 @@ export default {
 
 ```javascript
 import i18next from 'i18next';
+import { withPreset } from 'wakuwaku-i18n/i18next-preset';
 import app from '../../../i18n/zh/app.json';
 import common from '../../../i18n/zh/common.json';
 // 不 import site.json —— 那是官网专用文案,少 import 一个文件,打包器就不会把它带进小程序包。
 // 这取代了旧 emit 的 namespaces 白名单:那里有配置项兜着,这里没有,加表时自己想清楚。
 
-i18next.init({
+// 三条解析规则由 withPreset 统一提供,与路径 A 共用同一份 —— 别在这里另抄一遍。
+i18next.init(withPreset({
   lng: 'zh',
   fallbackLng: 'zh',
   resources: { zh: { translation: { app, common } } },
-  // 下面三条配错了症状都不明显:
-  nsSeparator: false,   // 关掉冒号命名空间解析,否则 'app.home.title' 会被当成 ns:key 拆开
-  keySeparator: '.',    // 点分路径
-  interpolation: { escapeValue: false, prefix: '{', suffix: '}' },  // 单花括号
   // 规矩:缺 key 绝不把 key 原样显示给用户(i18next 默认返回 key 本身)。
-  // 运行期不能抛错(会白屏),返回空串 + 告警。
+  // 运行期不能抛错(会白屏),返回空串 + 告警 —— 与路径 A 的抛错形成对照。
   parseMissingKeyHandler: (key) => { console.warn('[i18n] 缺文案:', key); return ''; },
-});
+}));
 
 export default i18next;
 export const t = (key, vars) => i18next.t(key, vars);   // 非响应式,供 store/纯 js 用
@@ -375,10 +372,12 @@ lint-raw 命中时逐处列出`文件:行号:内容`,并给两条出路(实测�
 
 ## 5. API 契约
 
-对外导出即 `package.json` `exports` 里的三个子路径。全部导出:
+对外导出即 `package.json` `exports` 里的四个子路径。全部导出:
 
 | 导出 | 从哪导入 | 签名 | 用途 |
 |---|---|---|---|
+| `PRESET` | `wakuwaku-i18n/i18next-preset` | 冻结的配置对象 | 三端必须一致的 i18next 解析规则:`nsSeparator:false`、`keySeparator:'.'`、`interpolation` 的单花括号。**不是取词逻辑,是配置常量** |
+| `withPreset` | `wakuwaku-i18n/i18next-preset` | `withPreset(options?) → object` | 把 PRESET 与消费方选项合并后交给 `i18next.init()`。**对 `interpolation` 做合并而非替换** —— 直接展开 PRESET 会丢掉 prefix/suffix,而症状是「占位符不报错、只是原样不替换」 |
 | `loadTables` | `wakuwaku-i18n/load` | `loadTables(i18nDir) → { [locale]: { [key]: string } }` | 读 `i18n/<语言>/<ns>.json` 展平成表,命名空间取文件名。值不是字符串就地抛错。Node-only |
 | `scanFiles` | `wakuwaku-i18n/scan` | `scanFiles({ root, dirs, exts, exempt? }) → { hits, fileExempt, lineExempt }` | 裸中文遍历 + 豁免过滤。lint-raw CLI 与消费方自建刹车点共用这一份实现(范例:Photoman `miniapp/test/i18n-exempt-count.test.mjs`)。Node-only |
 | `fileExemptReason` | `wakuwaku-i18n/exempt` | `fileExemptReason(src, masked?) → string \| null` | 识别文件级豁免标记(最前三行、理由必填);传 `masked` 才做"标记在真注释里"的词法核验。Node-only |
@@ -386,7 +385,7 @@ lint-raw 命中时逐处列出`文件:行号:内容`,并给两条出路(实测�
 | `splitByLineExemption` | `wakuwaku-i18n/exempt` | `splitByLineExemption(src, hits, masked?) → { hits, exempt }` | 把命中按行级豁免分流;豁免的仍要被打印,不是静默丢弃。Node-only |
 
 `src/check.js`、`src/lint-raw.js`、`src/doc-check.js` **不在 exports 里**,属 CLI 的内部实现;消费方需要
-程序化能力时按包名 import 上面三个子路径,**不要拿相对路径伸进 node_modules 挖源码**——
+程序化能力时按包名 import 上面四个子路径,**不要拿相对路径伸进 node_modules 挖源码**——
 那会绕过 exports、依赖物理布局(README 有同款警告)。
 
 三个 CLI(不走 import,直接 node 执行):

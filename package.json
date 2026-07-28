@@ -9,6 +9,9 @@
       "types": "./src/load.d.ts",
       "default": "./src/load.js"
     },
+    "./i18next-preset": {
+      "default": "./src/i18next-preset.js"
+    },
     "./exempt": {
       "default": "./src/exempt.js"
     },
