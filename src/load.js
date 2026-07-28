@@ -3,7 +3,20 @@
 // 不让 flatten 的 String() 强转把 "3"/"a,b" 悄悄打给用户。
 import fs from 'node:fs';
 import path from 'node:path';
-import { flatten } from './core.js';
+
+// 嵌套对象 → 点分 key 表。以 _ 开头的键是给人看的说明(如 _note),不入表。
+// 2026-07-28 从退役的 core.js 折进来:取词逻辑全交给 i18next 后,core 只剩这一个
+// 还有人用的函数,为它留一个模块不值当。
+export function flatten(obj, prefix = '', out = {}) {
+  for (const k of Object.keys(obj || {})) {
+    if (k.startsWith('_')) continue;
+    const key = prefix ? prefix + '.' + k : k;
+    const v = obj[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) flatten(v, key, out);
+    else out[key] = String(v);
+  }
+  return out;
+}
 
 function assertStringLeaves(obj, srcLabel, prefix) {
   for (const k of Object.keys(obj || {})) {
