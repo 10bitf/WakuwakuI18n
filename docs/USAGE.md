@@ -14,9 +14,15 @@ wakuwaku-i18n 管三件事:**文案表的加载与取词**(`i18n/<语言>/<命�
 
 | 消费方 | 形态 | 取词方式 | check | lint-raw | 豁免 | emit |
 |---|---|---|---|---|---|---|
-| Wakuwaku | Astro 静态站 | 构建期 `makeT` + `loadTables`(`src/lib/i18n.ts`) | 挂 prebuild | 挂 prebuild | 关(零豁免) | 无 |
-| Photoman 小程序 | uni-app + Vue3 | emit 自包含产物 + `templates/uniapp-vue3.js` 接线 | 有 | 有 | 开(另有钉条数刹车点) | 有,`namespaces: ['common', 'app']` |
-| Photoman 官网 | 静态生成(`tools/build-site.mjs`) | 构建期 `loadTables` 读全量表,模板 `{{site.x.y}}` 占位 | 同上(同仓一份 config) | 同上 | 同上 | 无(不走 emit) |
+| Wakuwaku | Astro 静态站 | **Paraglide 编译产物**(本框架不参与取词) | 不用 | 挂 prebuild | 关(零豁免) | 无 |
+| Photoman 小程序 | uni-app + Vue3 | **i18next + i18next-vue**(本框架不参与取词) | 有 | 有 | 开(另有钉条数刹车点) | 无(已退役) |
+| Photoman 官网 | 静态生成(`tools/build-site.mjs`) | **Paraglide 编译产物** + `tools/i18n-table.mjs` shim 摊平,模板 `{{site.x.y}}` 占位(未变) | 同上(同仓一份 config) | 同上 | 同上 | 无(不走 emit) |
+
+> **2026-07-28 起本框架正在收缩为「只管裸中文硬卡」。** 三个消费方的取词层已分别换成
+> Paraglide 或 i18next——改道过程、选型错误的复盘与实测证据见 Wakuwaku 仓库
+> `docs/superpowers/specs/2026-07-28-迁移到Paraglide-design.md`。
+> `core`/`load`/`emit`/`check` 待全部消费方停用后统一删除;`lint-raw`/`scan`/`exempt` 保留
+> ——那是开源界没有替代品的部分(`eslint-plugin-i18next` 不支持 `.astro`)。
 
 ## 2. 快速接入
 
