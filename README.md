@@ -3,7 +3,18 @@
 > 完整使用说明(接入步骤、配置与 API 契约表、硬卡判据、踩坑记录)见 [docs/USAGE.md](docs/USAGE.md);本 README 只做入口与速查。
 > 那两张契约表不是摆设——`tools/doc-check.mjs` 挂在 `npm test` 上机械校验它们与代码是否一致,改代码不同步改表会让 `npm test` 变红。
 
-Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI18n, 各项目以 file: 依赖引用。设计见 D:\project\Wakuwaku\docs\superpowers\specs\2026-07-27-通用文案框架-design.md。
+Wakuwaku 项目共用的**文案管控工具**——它**不提供取词**,取词交给 i18next(见 USAGE 两条路径)。
+它管的是另外四件事:**禁止源码里写裸中文**(`lint-raw`,开源界没有替代品)、
+**文案表与代码的一致性**(`check`:用了没定义的 key / 跨语言缺失 / 占位符不一致)、
+**读文案表**(`load`)、**三端 i18next 解析规则统一**(`i18next-preset`)。
+
+各项目以 **git URL** 依赖引用:`"wakuwaku-i18n": "github:10bitf/WakuwakuI18n"`。
+**绝不要用 `file:`** —— 那会让 npm 建符号链接,而 `npm install` 会沿着链接把本仓库清空
+(2026-07-28 因此被清了两次,靠 GitHub 备份才救回来)。理由与恢复经过见 USAGE 第 2 节的⛔块。
+框架更新后消费方要跑 `npm update wakuwaku-i18n`(不是 `install`)。
+
+设计与演变:`D:\project\Wakuwaku\docs\superpowers\specs\2026-07-28-迁移到Paraglide-design.md`
+(含选型判断错误的复盘;`2026-07-27-通用文案框架-design.md` 是它的前身,记录初版设计)。
 
 ## 接入三件套
 
@@ -23,7 +34,7 @@ Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI1
 3. package.json:
    ```json
    {
-     "dependencies": { "wakuwaku-i18n": "file:../WakuwakuI18n" },
+     "dependencies": { "wakuwaku-i18n": "github:10bitf/WakuwakuI18n" },
      "scripts": {
        "i18n:check": "node node_modules/wakuwaku-i18n/tools/check.mjs",
        "i18n:lint-raw": "node node_modules/wakuwaku-i18n/tools/lint-raw.mjs"
@@ -31,35 +42,23 @@ Wakuwaku 项目共用的文案/多语言框架。真本在 D:\project\WakuwakuI1
    }
    ```
 
-## 小程序端接入(uni-app + Vue3)
+## 取词怎么办(本框架不管)
 
-1. `i18n.config.mjs` 补 `emit.out`(产物路径,记得加进 .gitignore):
-   ```javascript
-   emit: { out: 'src/i18n/generated.js' }
-   ```
-   如果 `i18n/` 下还有官网或其它端专用的命名空间(如 `site`),加 `emit.namespaces` 白名单把它们挡在小程序包外;不填则全部命名空间都打进去:
-   ```javascript
-   emit: { out: 'src/i18n/generated.js', namespaces: ['common', 'app'] }
-   ```
-2. package.json 加脚本与构建钩子:
-   ```json
-   "i18n:emit": "node node_modules/wakuwaku-i18n/tools/emit.mjs",
-   "predev": "npm run i18n:emit",
-   "prebuild": "npm run i18n:emit"
-   ```
-3. 复制 `node_modules/wakuwaku-i18n/templates/uniapp-vue3.js` 到 `src/i18n/index.js`,按文件头注释改三处。
-4. `main.js` 里把 `t` 挂全局,模板中 `{{ t('app.xxx') }}` 直接可用。
+取词交给 **i18next**,两条路径的完整步骤见 [docs/USAGE.md](docs/USAGE.md) 第 2 节:
 
-**产物是自包含的**:文案表与取词逻辑都在 `generated.js` 里,端不 import 框架任何东西。
-这样小程序构建的模块解析差异(跨目录、symlink)一概不存在——这是端接入不再踩坑的关键。
-产物**不入库**,由构建钩子生成。
+- **路径 A · Web/静态站**:构建期取词,产物只有成品文本、页面零运行时 JS。缺 key **抛错让构建失败**。
+- **路径 B · uni-app 小程序/App/H5**:运行期取词,配 `i18next-vue` 拿响应式(切语言自动重渲染)。
+  缺 key **返回空串 + 告警**——运行期抛错会白屏。
+
+两条路径的解析规则由本框架的 `withPreset()` 统一提供,**别在各端另抄一遍**:
+`nsSeparator`/`keySeparator`/单花括号插值这三条配错了症状都不明显,抄了就会悄悄分叉且不报错。
 
 ## API
 
 ```javascript
-import { makeT, resolveLocale } from 'wakuwaku-i18n'      // 环境无关
-import { loadTables } from 'wakuwaku-i18n/load'           // Node-only
-import { scanFiles } from 'wakuwaku-i18n/scan'            // Node-only:裸中文遍历+豁免过滤,tools/lint-raw.mjs 的 CLI 就是它的薄封装
+import { withPreset } from 'wakuwaku-i18n/i18next-preset'  // 三端共用的 i18next 配置
+import { loadTables } from 'wakuwaku-i18n/load'            // Node-only:读文案表 → 扁平表
+import { scanFiles } from 'wakuwaku-i18n/scan'             // Node-only:裸中文遍历+豁免过滤,tools/lint-raw.mjs 就是它的薄封装
 import { fileExemptReason, splitByLineExemption } from 'wakuwaku-i18n/exempt' // Node-only:豁免标记的识别与过滤
 ```
 
