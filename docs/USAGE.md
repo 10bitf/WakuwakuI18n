@@ -14,22 +14,22 @@ wakuwaku-i18n 原本管三件事:文案表的加载与取词、**两道构建期
 
 当前三个消费方各用了哪些能力:
 
-| 消费方 | 形态 | 取词方式 | check | lint-raw | 豁免 | emit |
-|---|---|---|---|---|---|---|
-| Wakuwaku | Astro 静态站 | **Paraglide 编译产物**(本框架不参与取词) | 不用 | 挂 prebuild | 关(零豁免) | 无 |
-| Photoman 小程序 | uni-app + Vue3 | **i18next + i18next-vue**(本框架不参与取词) | 有 | 有 | 开(另有钉条数刹车点) | 无(已退役) |
-| Photoman 官网 | 静态生成(`tools/build-site.mjs`) | **Paraglide 编译产物** + `tools/i18n-table.mjs` shim 摊平,模板 `{{site.x.y}}` 占位(未变) | 同上(同仓一份 config) | 同上 | 同上 | 无(不走 emit) |
+| 消费方 | 形态 | 取词方式 | check | lint-raw | 豁免 |
+|---|---|---|---|---|---|
+| Wakuwaku | Astro 静态站 | **i18next**(构建期,本框架不参与取词) | 挂 prebuild | 挂 prebuild | 关(零豁免) |
+| Photoman 小程序 | uni-app + Vue3 | **i18next + i18next-vue**(运行期,本框架不参与取词) | 有 | 有 | 开(另有钉条数刹车点) |
+| Photoman 官网 | 静态生成(`tools/build-site.mjs`) | `loadTables` 取扁平表,模板 `{{site.x.y}}` 占位 | 同上(同仓一份 config) | 同上 | 同上 |
 
 > **2026-07-28 起本框架正在收缩为「只管裸中文硬卡」。** 三个消费方的取词层已分别换成
-> Paraglide 或 i18next——改道过程、选型错误的复盘与实测证据见 Wakuwaku 仓库
+> i18next(构建期与运行期同一个库)——改道过程、选型错误的复盘与实测证据见 Wakuwaku 仓库
 > `docs/superpowers/specs/2026-07-28-迁移到Paraglide-design.md`。
-> `core`/`load`/`emit`/`check` 待全部消费方停用后统一删除;`lint-raw`/`scan`/`exempt` 保留
-> ——那是开源界没有替代品的部分(`eslint-plugin-i18next` 不支持 `.astro`)。
+> `core`/`emit` 与端适配模板已删除。**`check` 与 `load` 留下**:i18next 路线下调用形态仍是
+> `t('ns.x.y')`,check 照样能采集 key —— 那是「构建期漏 key 报错」唯一的来源。
 
 ## 2. 快速接入
 
 前提:Node >= 20(框架 `package.json` 的 `engines` 声明)。两条路径共用的地基:
-**`i18n/` 目录与 `i18n.config.mjs` 都放在消费方仓库根**——三个 CLI 都按 `process.cwd()` 找它们
+**`i18n/` 目录与 `i18n.config.mjs` 都放在消费方仓库根**——两个 CLI 都按 `process.cwd()` 找它们
 (`i18n/` 的位置是写死的,不可配置),所以命令要在仓库根执行(npm scripts 天然满足)。
 
 > ### ⛔ 依赖方式:用 git URL,**绝不要用 `file:`**
@@ -95,22 +95,56 @@ export default {
 };
 ```
 
-第 4 步,建取词接线 `src/lib/i18n.ts`(Wakuwaku 原文,总共十行):
+第 4 步,端侧装 i18next(取词不经本框架):
+
+```
+$ npm install --save i18next
+```
+
+第 5 步,建取词接线 `src/lib/i18n.ts`。**与路径 B 用同一个库、同一套配置语义**,
+区别只在缺 key 的处理——构建期抛错让构建失败,运行期返回空串(抛错会白屏):
 
 ```typescript
 // 构建时取词。缺 key 直接抛错让构建失败——静态站宁可不出包,不出空文案。
+import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { makeT } from "wakuwaku-i18n";
-import { loadTables } from "wakuwaku-i18n/load";
+import i18next from "i18next";
 
-const tables = loadTables(fileURLToPath(new URL("../../i18n", import.meta.url)));
+const I18N_DIR = fileURLToPath(new URL("../../i18n", import.meta.url));
 
-export const t = makeT(tables, () => "zh", (key) => {
-  throw new Error(`缺文案 key: ${key}（i18n/zh/ 里没有）`);
+// 命名空间 = 文件名,挂进同一个 i18next namespace 的顶层键,
+// 靠 keySeparator '.' 走点分路径 → t('common.nav.home') 与文案表形状逐字对应。
+function loadResources() {
+  const resources = {};
+  for (const locale of fs.readdirSync(I18N_DIR)) {
+    const dir = path.join(I18N_DIR, locale);
+    if (!fs.statSync(dir).isDirectory()) continue;
+    const tree = {};
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith(".json")) continue;
+      tree[f.replace(/\.json$/, "")] = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+    }
+    resources[locale] = { translation: tree };
+  }
+  return resources;
+}
+
+await i18next.init({
+  lng: "zh",
+  fallbackLng: "zh",
+  resources: loadResources(),
+  // 下面三条配错了症状都不明显:
+  nsSeparator: false,   // 关掉冒号命名空间解析,否则 'common.nav.home' 会被当成 ns:key 拆开
+  keySeparator: ".",
+  interpolation: { escapeValue: false, prefix: "{", suffix: "}" },  // 单花括号;转义交给 Astro
+  parseMissingKeyHandler: (key) => { throw new Error(`缺文案 key: ${key}`); },
 });
+
+export const t = (key, vars) => i18next.t(key, vars);
 ```
 
-第 5 步,页面里用:
+第 6 步,页面里用:
 
 ```astro
 ---
@@ -121,7 +155,7 @@ const title = t('common.nav.home');
 <p>{t('common.brand.name')}</p>
 ```
 
-第 6 步,验证(实测输出):
+第 7 步,验证(实测输出):
 
 ```
 $ npm run i18n:check
@@ -132,13 +166,10 @@ $ npm run i18n:lint-raw
 
 之后 `npm run build` 会先跑 prebuild 的两道检查,任一不过就不出包。
 
-> **本节描述的是历史形态。** Wakuwaku 官网 2026-07-28 起已改用 Paraglide 取词,
-> 本框架在那边只剩 `i18n:lint-raw`。上面的 `makeT` + `loadTables` 写法仍然可用
-> (代码还在),但新项目建议直接照第 1 节表里的现状选路。
 
 ### 路径 B:uni-app 小程序(以 Photoman 为范例)
 
-运行期取词,用 **i18next + i18next-vue**。与路径 A(构建期、Paraglide)是同一件事的两种形态:
+运行期取词,用 **i18next + i18next-vue**。与路径 A(构建期、同样是 i18next)是同一件事的两种形态:
 **取词发生在什么时候**决定了用哪个——用户能在界面上切语言就归运行期档,不能就归构建期档。
 App / 鸿蒙 / H5 / 快应用与小程序是同一份 uni-app 源码,一并归这一档,不需要第三套。
 
@@ -179,8 +210,8 @@ $ cd miniapp && npm install --save i18next i18next-vue
 { "home": { "title": "首页", "greeting": "你好,{name}" } }
 ```
 
-**占位符用单花括号 `{name}`** —— 这是 vue-i18n/i18next(配置后)与我们全线共用的形态,
-也是路径 A 那边靠 `variableReferencePattern` 配平的目标。别写成双花括号。
+**占位符用单花括号 `{name}`** —— 两条路径共用同一份 `interpolation` 配置。
+i18next 默认是双花括号,所以 `prefix`/`suffix` 两边都必须显式给。
 
 第 4 步,建 `i18n.config.mjs`(只剩 lint 的扫描面):
 
@@ -334,36 +365,29 @@ lint-raw 命中时逐处列出`文件:行号:内容`,并给两条出路(实测�
 | `rawLint.dirs` | 是 | `tools/lint-raw.mjs` | 裸中文扫描目录列表(相对仓库根)。列表里不存在的目录静默跳过 |
 | `rawLint.exts` | 是 | `tools/lint-raw.mjs` | 裸中文扫描的扩展名白名单(带点)。扩展名决定遮蔽管线(见第 6 节) |
 | `rawLint.exempt` | 否 | `tools/lint-raw.mjs` | 严格 `=== true` 才启用豁免标记;默认零豁免,写 `1`/`'true'` 都不算开 |
-| `emit.out` | 否 | `tools/emit.mjs` | 产物输出路径(相对仓库根)。只在跑 emit 时才需要;跑了 emit 却没配,报错退出。产物记得进 .gitignore |
-| `emit.namespaces` | 否 | `tools/emit.mjs` | 命名空间白名单,只有列出的进产物;不写 = 全部命名空间都打进去。写了不存在的命名空间不报错、也不产生空条目 |
 
 补充事实(都有代码依据):
 
-- `i18n/` 目录位置写死为仓库根(`tools/check.mjs` 与 `tools/emit.mjs` 都是 `path.join(root, 'i18n')`),不可配置。
-- 三个 CLI 的 `root` 都取 `process.cwd()`,必须在消费方仓库根执行(npm scripts 天然满足)。
+- `i18n/` 目录位置写死为仓库根(`tools/check.mjs` 里是 `path.join(root, 'i18n')`),不可配置。
+- 两个 CLI 的 `root` 都取 `process.cwd()`,必须在消费方仓库根执行(npm scripts 天然满足)。
 - check 与 lint-raw 的遍历都跳过这些目录名:`node_modules`、`dist`、`i18n`、`.git`、`.astro`、`unpackage`。
   这也是 emit 产物放 `src/i18n/` 下的原因之一——目录名叫 `i18n`,天然在两道扫描之外。
 
 ## 5. API 契约
 
-对外导出即 `package.json` `exports` 里的四个子路径。全部导出:
+对外导出即 `package.json` `exports` 里的三个子路径。全部导出:
 
 | 导出 | 从哪导入 | 签名 | 用途 |
 |---|---|---|---|
-| `makeT` | `wakuwaku-i18n` | `makeT(tables, getLocale, onMissing?) → t(key, vars?)` | 生成取词函数。`getLocale` 每次调用现取(切语言立即生效);当前语言缺 key 回退 zh,仍缺则调 `onMissing(key, locale)` 并返回空串——绝不把 key 原样显示给用户 |
-| `resolveLocale` | `wakuwaku-i18n` | `resolveLocale(stored, system, supported, fallback?) → string` | 语言解析:用户存储的选择 > 系统语言(`zh_CN`/`en-US` 归一化后前缀匹配) > 缺省 |
-| `interpolate` | `wakuwaku-i18n` | `interpolate(tpl, vars?) → string` | `{name}` 按名字替换。未提供或值为 null/undefined 的占位符原样保留(一眼看出漏传),非标识符的花括号不动 |
-| `flatten` | `wakuwaku-i18n` | `flatten(obj, prefix?, out?) → { [flatKey]: string }` | 嵌套对象 → 点分 key 表;`_` 开头的键跳过 |
-| `FALLBACK_LOCALE` | `wakuwaku-i18n` | `'zh'` | 兜底语言常量,makeT/resolveLocale 的缺省 |
 | `loadTables` | `wakuwaku-i18n/load` | `loadTables(i18nDir) → { [locale]: { [key]: string } }` | 读 `i18n/<语言>/<ns>.json` 展平成表,命名空间取文件名。值不是字符串就地抛错。Node-only |
 | `scanFiles` | `wakuwaku-i18n/scan` | `scanFiles({ root, dirs, exts, exempt? }) → { hits, fileExempt, lineExempt }` | 裸中文遍历 + 豁免过滤。lint-raw CLI 与消费方自建刹车点共用这一份实现(范例:Photoman `miniapp/test/i18n-exempt-count.test.mjs`)。Node-only |
 | `fileExemptReason` | `wakuwaku-i18n/exempt` | `fileExemptReason(src, masked?) → string \| null` | 识别文件级豁免标记(最前三行、理由必填);传 `masked` 才做"标记在真注释里"的词法核验。Node-only |
 | `collectLineExemptions` | `wakuwaku-i18n/exempt` | `collectLineExemptions(src, masked?) → Map<行号, 理由>` | 收集行级豁免标记(与命中同行、理由必填)。Node-only |
 | `splitByLineExemption` | `wakuwaku-i18n/exempt` | `splitByLineExemption(src, hits, masked?) → { hits, exempt }` | 把命中按行级豁免分流;豁免的仍要被打印,不是静默丢弃。Node-only |
 
-`src/check.js`、`src/lint-raw.js`、`src/emit.js` **不在 exports 里**,属 CLI 的内部实现;消费方需要程序化能力时
-按包名 import 上面四个子路径,**不要拿相对路径伸进 node_modules 挖源码**——那会绕过 exports、依赖物理布局,
-npm 用 symlink 时会碎(README 有同款警告)。
+`src/check.js`、`src/lint-raw.js`、`src/doc-check.js` **不在 exports 里**,属 CLI 的内部实现;消费方需要
+程序化能力时按包名 import 上面三个子路径,**不要拿相对路径伸进 node_modules 挖源码**——
+那会绕过 exports、依赖物理布局(README 有同款警告)。
 
 三个 CLI(不走 import,直接 node 执行):
 
@@ -371,7 +395,6 @@ npm 用 symlink 时会碎(README 有同款警告)。
 |---|---|---|---|
 | `tools/check.mjs` | `node node_modules/wakuwaku-i18n/tools/check.mjs` | `locales`、`scan` | 缺 `i18n.config.mjs`,或有 error 级问题(第 3 节) |
 | `tools/lint-raw.mjs` | `node node_modules/wakuwaku-i18n/tools/lint-raw.mjs [--summary]` | `rawLint.dirs`、`rawLint.exts`、`rawLint.exempt` | 有裸中文命中 |
-| `tools/emit.mjs` | `node node_modules/wakuwaku-i18n/tools/emit.mjs` | `emit.out`、`emit.namespaces` | 缺 `emit.out`,或 `i18n/` 目录缺失/表值非法 |
 
 ## 6. 两道硬卡
 
