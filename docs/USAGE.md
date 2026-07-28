@@ -5,10 +5,12 @@
 
 ## 1. 这是什么
 
-wakuwaku-i18n 管三件事:**文案表的加载与取词**(`i18n/<语言>/<命名空间>.json` → 点分 key → `t('ns.x.y')`)、
-**两道构建期硬卡**(check:key 与表的一致性;lint-raw:禁止裸中文)、**自包含产物生成**(emit:把文案表与取词逻辑
-拼成一个零依赖模块,给小程序这类模块解析脆弱的端)。它**不管**:UI 框架接线(响应式、本地存储——那是消费方的
-几十行胶水,见 `templates/`)、翻译工作流、文案内容审校。
+wakuwaku-i18n 原本管三件事:文案表的加载与取词、**两道构建期硬卡**(check;lint-raw)、自包含产物生成(emit)。
+**2026-07-28 起它正在收缩为只管 `lint-raw`(禁止裸中文)** —— 取词层各端改用成熟开源库
+(见下方消费方表),那部分是重复造轮子;而裸中文硬卡开源界没有替代品
+(`eslint-plugin-i18next` 的 `no-literal-string` 不支持 `.astro`),故保留。
+
+它**不管**:UI 框架接线(响应式、本地存储——那是消费方的几十行胶水)、翻译工作流、文案内容审校。
 
 当前三个消费方各用了哪些能力:
 
@@ -113,12 +115,19 @@ $ npm run i18n:lint-raw
 
 之后 `npm run build` 会先跑 prebuild 的两道检查,任一不过就不出包。
 
+> **本节描述的是历史形态。** Wakuwaku 官网 2026-07-28 起已改用 Paraglide 取词,
+> 本框架在那边只剩 `i18n:lint-raw`。上面的 `makeT` + `loadTables` 写法仍然可用
+> (代码还在),但新项目建议直接照第 1 节表里的现状选路。
+
 ### 路径 B:uni-app 小程序(以 Photoman 为范例)
 
-走 emit 自包含产物:文案表与取词逻辑拼进一个 `generated.js`,端只 import 这一个文件,
-不 import 框架任何东西——小程序构建的模块解析差异(跨目录、symlink)一概不存在。
+运行期取词,用 **i18next + i18next-vue**。与路径 A(构建期、Paraglide)是同一件事的两种形态:
+**取词发生在什么时候**决定了用哪个——用户能在界面上切语言就归运行期档,不能就归构建期档。
+App / 鸿蒙 / H5 / 快应用与小程序是同一份 uni-app 源码,一并归这一档,不需要第三套。
 
-第 1 步,**仓库根** package.json(Photoman 实际内容):
+本框架在这条路径上**只负责 `i18n:lint-raw`**(裸中文硬卡)。
+
+第 1 步,**仓库根** package.json 只留 lint(取词不经本框架):
 
 ```json
 {
@@ -128,16 +137,27 @@ $ npm run i18n:lint-raw
     "wakuwaku-i18n": "file:../WakuwakuI18n"
   },
   "scripts": {
-    "i18n:check": "node node_modules/wakuwaku-i18n/tools/check.mjs",
-    "i18n:lint-raw": "node node_modules/wakuwaku-i18n/tools/lint-raw.mjs",
-    "i18n:emit": "node node_modules/wakuwaku-i18n/tools/emit.mjs"
+    "i18n:lint-raw": "node node_modules/wakuwaku-i18n/tools/lint-raw.mjs"
   }
 }
 ```
 
-然后 `npm install`。
+> **⚠️ 在有 `file:` 依赖的目录里跑 `npm install` 之前,先确认被链接的仓库有最新远端备份。**
+> npm 处理 `file:` 符号链接依赖时会沿着链接清理目标目录——2026-07-28 因此把整个框架仓库
+> 清空过一次,靠 GitHub 上的备份才救回来。装包尽量在**不含 `file:` 依赖的子包**里做
+> (如 Photoman 的 `miniapp/`)。
 
-第 2 步,建文案表。`i18n/zh/common.json`、`i18n/zh/app.json` 给小程序,官网若同仓另建 `i18n/zh/site.json`:
+第 2 步,端侧装 i18next(在 `miniapp/`,不是仓库根):
+
+```
+$ cd miniapp && npm install --save i18next i18next-vue
+```
+
+> **版本坑**:`i18next-vue@5.x` 的 peer 要求 `vue ^3.4.38`。uni-app 常把 vue 锁在更低的版本
+> (Photoman 是 3.4.21),此时装 **`i18next-vue@4.0.0`**(peer 是 `vue ^3.3.4` + `i18next >=23`)。
+> **别为此升 Vue**——uni-app 的小程序运行时与 Vue 版本耦合很深;也别用 `--legacy-peer-deps` 硬压。
+
+第 3 步,建文案表。`i18n/zh/common.json`、`i18n/zh/app.json` 给小程序,官网若同仓另建 `i18n/zh/site.json`:
 
 ```json
 { "brand": { "name": "哇酷哇酷" } }
@@ -147,88 +167,91 @@ $ npm run i18n:lint-raw
 { "home": { "title": "首页", "greeting": "你好,{name}" } }
 ```
 
-```json
-{ "hero": { "slogan": "官网专用口号,不该进小程序包" } }
-```
+**占位符用单花括号 `{name}`** —— 这是 vue-i18n/i18next(配置后)与我们全线共用的形态,
+也是路径 A 那边靠 `variableReferencePattern` 配平的目标。别写成双花括号。
 
-第 3 步,建 `i18n.config.mjs`(Photoman 实际形状,路径按你的目录改):
+第 4 步,建 `i18n.config.mjs`(只剩 lint 的扫描面):
 
 ```javascript
 export default {
   locales: ['zh'],
-  scan: [
-    { dir: 'miniapp/src', exts: ['.vue', '.js'] },
-    { dir: 'homepage/templates', exts: ['.html'] },
-  ],
   rawLint: {
     dirs: ['miniapp/src', 'homepage/templates'],
     exts: ['.vue', '.js', '.json', '.html'],
     exempt: true,
   },
-  // namespaces 白名单:小程序只要 common 与 app,site 是官网专用,不进小程序包
-  emit: { out: 'miniapp/src/i18n/generated.js', namespaces: ['common', 'app'] },
 };
 ```
 
-第 4 步,生成产物并把它挡出版本库(实测输出):
-
-```
-$ npm run i18n:emit
-✓ 文案产物已生成 → miniapp/src/i18n/generated.js (zh:3)
-$ echo miniapp/src/i18n/generated.js >> .gitignore
-```
-
-产物不入库,由构建钩子生成。Photoman 把钩子挂在 miniapp/package.json(uni-app 的构建脚本在子目录):
-
-```json
-"predev:mp-weixin": "cd .. && npm run i18n:emit",
-"prebuild:mp-weixin": "cd .. && npm run i18n:emit"
-```
-
-(单 package.json 的项目直接挂 `"predev": "npm run i18n:emit"`、`"prebuild": "npm run i18n:emit"` 即可。)
-
-第 5 步,复制端适配模板:
-
-```
-$ cp node_modules/wakuwaku-i18n/templates/uniapp-vue3.js miniapp/src/i18n/index.js
-```
-
-按文件头注释改三处:① `STORAGE_KEY` 换成本项目专用(如 `photoman_locale`,不同小程序别共用一个 key);
-② `./generated.js` 的相对路径按目录结构调整;③ `onMissing` 按需(开发期 console.warn 即可)。
-模板导出 `t` / `locale` / `setLocale` / `I18N_STAMP`;`locale` 是 Vue ref,切换语言即自动重渲染。
-
-第 6 步,`main.js` 里把 `t` 挂全局(Photoman 实际写法):
+第 5 步,写端接线 `miniapp/src/i18n/index.js`。**只 import 端要用的表**:
 
 ```javascript
-import { t, I18N_STAMP } from "./i18n/index.js";
-// 全局取词:模板中直接 {{ t(key) }}。
-// 注:此处不要写虚构的示例 key 字面量——check 会把源码里出现的 t('...') 都当真实用量扫描。
-app.config.globalProperties.t = t;
-console.log('[i18n] stamp =', I18N_STAMP);
+import i18next from 'i18next';
+import app from '../../../i18n/zh/app.json';
+import common from '../../../i18n/zh/common.json';
+// 不 import site.json —— 那是官网专用文案,少 import 一个文件,打包器就不会把它带进小程序包。
+// 这取代了旧 emit 的 namespaces 白名单:那里有配置项兜着,这里没有,加表时自己想清楚。
+
+i18next.init({
+  lng: 'zh',
+  fallbackLng: 'zh',
+  resources: { zh: { translation: { app, common } } },
+  // 下面三条配错了症状都不明显:
+  nsSeparator: false,   // 关掉冒号命名空间解析,否则 'app.home.title' 会被当成 ns:key 拆开
+  keySeparator: '.',    // 点分路径
+  interpolation: { escapeValue: false, prefix: '{', suffix: '}' },  // 单花括号
+  // 规矩:缺 key 绝不把 key 原样显示给用户(i18next 默认返回 key 本身)。
+  // 运行期不能抛错(会白屏),返回空串 + 告警。
+  parseMissingKeyHandler: (key) => { console.warn('[i18n] 缺文案:', key); return ''; },
+});
+
+export default i18next;
+export const t = (key, vars) => i18next.t(key, vars);   // 非响应式,供 store/纯 js 用
 ```
 
-第 7 步,验证。页面模板里 `{{ t('app.home.title') }}` 直接可用;不进模拟器也能验产物
-(generated.js 自包含,node 可直接 import,实测输出):
+第 6 步,`main.js` 装 `i18next-vue` 并把全局 `t` 指向**响应式**的 `$t`:
+
+```javascript
+import I18NextVue from 'i18next-vue';
+import i18next from './i18n/index.js';
+
+app.use(I18NextVue, { i18next });
+// 指向 $t 而不是上面那个普通 t:两者取词结果相同,但只有 $t 订阅了 i18next 的
+// languageChanged 事件。用普通 t 的话,切语言后模板不会重渲染。
+app.config.globalProperties.t = app.config.globalProperties.$t;
+```
+
+这样模板里 `{{ t('app.home.title') }}` 照常可用,**接入不需要改任何已有调用点**——
+i18next 的「嵌套 JSON + 文件名当命名空间 + 点分路径」正是本框架文案表本来的形状。
+
+第 7 步,验证(实测输出):
 
 ```
-$ node -e "import('./miniapp/src/i18n/generated.js').then((m) => {
-    const t = m.makeT(m.MESSAGES, () => 'zh');
-    console.log(t('app.home.title'), t('app.home.greeting', { name: 'Fable' }));
-    console.log(JSON.stringify(t('site.hero.slogan')));
-  })"
-首页 你好,Fable
-""
+$ npm run i18n:lint-raw
+✓ 无裸中文,豁免 6 份 + 37 行
 ```
 
-最后一行是空串:`site` 被 namespaces 白名单挡在包外,官网文案没进小程序包。两道硬卡照常跑
-(`npm run i18n:check`、`npm run i18n:lint-raw`),与路径 A 无异。
+取词本身可以不进模拟器就验——uni-app 同源多端,H5 端跑的是完全相同的接线:
+
+```
+$ cd miniapp && npx uni build          # H5 产物在 dist/build/h5
+```
+
+用浏览器打开即可核对取词、占位符、缺 key 返回空串、以及**切语言时模板是否重渲染**。
+微信开发者工具那一遍仍要跑,但它验的是引擎差异,不是接线对错。
+
+**钢印(stale 包闸)**:退役 emit 后不再有构建时间戳。若你的 e2e 依赖钢印判断
+「开发者工具跑的是不是旧包」,改用**文案表内容哈希**——比时间戳更准:文案没变时重建不误报,
+文案变了必然变。端侧与 e2e 侧共用同一份哈希实现,别各写一份。
+
 
 ## 3. 日常使用
 
 ### 改文案
 
-改 `i18n/zh/<命名空间>.json` 里的值即可,key 不动就不用碰代码。静态站(路径 A)重新构建生效;
-小程序(路径 B)由 predev/prebuild 钩子重新 emit,手动 `npm run i18n:emit` 也行。
+改 `i18n/zh/<命名空间>.json` 里的值即可,key 不动就不用碰代码。
+静态站(路径 A)重新构建生效;小程序(路径 B)端直接 import JSON 表,重新构建即生效
+(emit 中间产物已于 2026-07-28 退役,不再需要额外的生成步骤)。
 值的首尾不要留空格,量词(米/秒)进表、排版符号(箭头/圆圈序号)留模板——详见 README 命名指导。
 
 ### 加文案
@@ -241,7 +264,9 @@ $ node -e "import('./miniapp/src/i18n/generated.js').then((m) => {
 
 整个 `i18n/zh/` 目录复制成 `i18n/<新语言>/`,逐条翻译;`i18n.config.mjs` 的 `locales` 补上新语言
 (声明了却没建目录,check 会红)。没翻完可以先上:缺的条目 check 只打 info 不拦截,运行时自动回退中文。
-但**占位符必须与中文版一致**,不一致直接红(见下)。翻译期间小程序端记得重新 emit。
+但**占位符必须与中文版一致**,不一致直接红(见下)。
+小程序端还要在 `src/i18n/index.js` 里 import 新语言的表并加进 `resources`——
+端只 import 自己要用的表,没有配置项替你兜底。
 
 ### 检查报错了怎么读
 
