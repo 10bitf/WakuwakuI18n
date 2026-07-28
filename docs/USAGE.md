@@ -28,9 +28,26 @@ wakuwaku-i18n 原本管三件事:文案表的加载与取词、**两道构建期
 
 ## 2. 快速接入
 
-前提:Node >= 20(框架 `package.json` 的 `engines` 声明);框架本体在 `D:\project\WakuwakuI18n`,消费方以
-`file:` 依赖引用。两条路径共用的地基:**`i18n/` 目录与 `i18n.config.mjs` 都放在消费方仓库根**——三个 CLI
-都按 `process.cwd()` 找它们(`i18n/` 的位置是写死的,不可配置),所以命令要在仓库根执行(npm scripts 天然满足)。
+前提:Node >= 20(框架 `package.json` 的 `engines` 声明)。两条路径共用的地基:
+**`i18n/` 目录与 `i18n.config.mjs` 都放在消费方仓库根**——三个 CLI 都按 `process.cwd()` 找它们
+(`i18n/` 的位置是写死的,不可配置),所以命令要在仓库根执行(npm scripts 天然满足)。
+
+> ### ⛔ 依赖方式:用 git URL,**绝不要用 `file:`**
+>
+> ```json
+> "wakuwaku-i18n": "github:10bitf/WakuwakuI18n"
+> ```
+>
+> **`file:../WakuwakuI18n` 会让 npm 在 `node_modules` 里建符号链接指向框架真本,
+> 而 `npm install` 会沿着那个链接把框架仓库的内容清空。** 2026-07-28 当天因此被清了
+> **两次**——第一次是在消费方根目录装包触发,第二次是另一个会话跑 `npm install` 触发
+> (npm 日志里两条 install 记录,参数不同,来自不同会话)。只要链接还在这事就会一直重演,
+> 跟谁跑的无关;而两个消费方的 `node_modules` 都是链接,**哪边都没有副本可救**,
+> 唯一救回来的途径是 GitHub 上的备份。
+>
+> git URL 让 npm **真正拷贝**一份进 `node_modules`,源仓库碰不到。
+> 代价:框架改动要先 `git push` 才能被消费方 `npm install` 看到。
+> 框架已收缩为稳定的 lint-only 包,不该频繁改,这个代价可以接受。
 
 ### 路径 A:Web/静态站(以 Wakuwaku 为范例)
 
@@ -46,12 +63,12 @@ wakuwaku-i18n 原本管三件事:文案表的加载与取词、**两道构建期
     "prebuild": "npm run i18n:check && npm run i18n:lint-raw"
   },
   "dependencies": {
-    "wakuwaku-i18n": "file:../WakuwakuI18n"
+    "wakuwaku-i18n": "github:10bitf/WakuwakuI18n"
   }
 }
 ```
 
-然后 `npm install`(会在 node_modules 建符号链接指向框架真本,框架更新无需重装)。
+然后 `npm install`。框架更新后需要重新 `npm install` 才能拿到——git URL 是拷贝,不是链接。
 
 第 2 步,建文案表 `i18n/zh/common.json`:
 
@@ -134,18 +151,13 @@ App / 鸿蒙 / H5 / 快应用与小程序是同一份 uni-app 源码,一并归�
   "name": "photoman",
   "private": true,
   "dependencies": {
-    "wakuwaku-i18n": "file:../WakuwakuI18n"
+    "wakuwaku-i18n": "github:10bitf/WakuwakuI18n"
   },
   "scripts": {
     "i18n:lint-raw": "node node_modules/wakuwaku-i18n/tools/lint-raw.mjs"
   }
 }
 ```
-
-> **⚠️ 在有 `file:` 依赖的目录里跑 `npm install` 之前,先确认被链接的仓库有最新远端备份。**
-> npm 处理 `file:` 符号链接依赖时会沿着链接清理目标目录——2026-07-28 因此把整个框架仓库
-> 清空过一次,靠 GitHub 上的备份才救回来。装包尽量在**不含 `file:` 依赖的子包**里做
-> (如 Photoman 的 `miniapp/`)。
 
 第 2 步,端侧装 i18next(在 `miniapp/`,不是仓库根):
 
