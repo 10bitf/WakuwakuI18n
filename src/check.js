@@ -4,7 +4,16 @@ import path from 'node:path';
 
 const FALLBACK = 'zh';
 export const SKIP_DIRS = new Set(['node_modules', 'dist', 'i18n', '.git', '.astro', 'unpackage']);
-export const placeholders = (s) => new Set([...String(s).matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]));
+// 占位符 → 出现次数。**计次而不是只看有没有**:翻译(尤其是 AI 翻译)会把
+// "{n} 项,{n} 处该改" 译成 "{n} items to fix" —— 名字集合没变,少了一次出现。
+// 只用 Set 比对这种翻车会漏检,而它恰是 AI 翻译的典型失败模式之一。
+export const placeholders = (s) => {
+  const counts = new Map();
+  for (const m of String(s).matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) {
+    counts.set(m[1], (counts.get(m[1]) || 0) + 1);
+  }
+  return counts;
+};
 export const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function analyze({ defined, used, locales }) {
@@ -25,7 +34,10 @@ export function analyze({ defined, used, locales }) {
     for (const k of Object.keys(base)) {
       if (!(k in tbl)) continue;
       const a = placeholders(base[k]), b = placeholders(tbl[k]);
-      const diff = [...new Set([...a, ...b])].filter((p) => a.has(p) !== b.has(p));
+      // 比出现次数,不只比有没有 —— 见 placeholders 上方注释
+      const diff = [...new Set([...a.keys(), ...b.keys()])]
+        .filter((p) => (a.get(p) || 0) !== (b.get(p) || 0))
+        .map((p) => `${p}(${a.get(p) || 0}→${b.get(p) || 0})`);
       if (diff.length) errors.push(`占位符不一致 ${k}（${FALLBACK} vs ${loc}）: ${diff.join(', ')}`);
     }
   }

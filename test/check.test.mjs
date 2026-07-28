@@ -20,6 +20,34 @@ test('analyze:用了未定义=错;定义未用=提示;非zh缺=清单;占位符�
   assert.equal(r.info.filter((i) => i.includes('en 缺 1 条')).length, 1, 'en 缺 site.unused');
 });
 
+// 占位符校验按**出现次数**比,不是只比名字集合。
+// 这一条是冲着 AI 翻译来的:它的典型翻车里,"重复占位符丢了一个" 用集合比对完全看不出来。
+test('analyze:占位符按出现次数比对——AI 翻译的四种翻车都要拦下', () => {
+  const run = (zh, en) => analyze({
+    defined: { zh: { 'app.x': zh }, en: { 'app.x': en } },
+    used: ['app.x'],
+    locales: ['zh', 'en'],
+  }).errors.filter((e) => e.includes('占位符不一致'));
+
+  assert.equal(run('进入{title}', 'Enter {标题}').length, 1, '占位符被译成中文');
+  assert.equal(run('{n} 项,{n} 处该改', '{n} items to fix').length, 1, '重复占位符丢了一个(集合比对漏检的那种)');
+  assert.equal(run('共 {n} 项', '{n} of {total} items').length, 1, '凭空多出占位符');
+  assert.equal(run('机位 {n}', 'Spot').length, 1, '占位符整个丢掉');
+
+  // 正常翻译不许误报 —— 尤其语序调换,那是翻译的常态
+  assert.equal(run('机位 {n}', 'Spot {n}').length, 0);
+  assert.equal(run('{version} · 更新 {updated}', 'Updated {updated} · {version}').length, 0, '语序调换要放行');
+});
+
+test('analyze:报错信息带出次数差,而不是只说"不一致"', () => {
+  const r = analyze({
+    defined: { zh: { 'app.x': '{n} 项,{n} 处' }, en: { 'app.x': '{n} items' } },
+    used: ['app.x'],
+    locales: ['zh', 'en'],
+  });
+  assert.match(r.errors[0], /n\(2→1\)/, '要能一眼看出少了几次');
+});
+
 test('collectUsedKeys:t() 字面量、数据表 key 字面量、{{}} 模板占位;不认非命名空间前缀', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wkwk-scan-'));
   fs.mkdirSync(path.join(root, 'src'), { recursive: true });
