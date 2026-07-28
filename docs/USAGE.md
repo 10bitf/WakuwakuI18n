@@ -68,7 +68,7 @@ wakuwaku-i18n 原本管三件事:文案表的加载与取词、**两道构建期
 }
 ```
 
-然后 `npm install`。框架更新后需要重新 `npm install` 才能拿到——git URL 是拷贝,不是链接。
+然后 `npm install`。**框架更新后要跑 `npm update wakuwaku-i18n`**(不是 install)——git URL 是拷贝不是链接,而 lock 会把它钉在旧 commit 上。
 
 第 2 步,建文案表 `i18n/zh/common.json`:
 
