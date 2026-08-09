@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadTables } from '../src/load.js';
-import { analyze, collectUsedKeys } from '../src/check.js';
+import { analyze, collectUsedKeys, normalizeLocales } from '../src/check.js';
+import { checkAssets } from '../src/assets.js';
 
 const FALLBACK = 'zh';
 
@@ -14,16 +15,22 @@ async function main() {
   if (!fs.existsSync(cfgPath)) { console.error(`✗ 缺 ${cfgPath}`); process.exit(1); }
   const cfg = (await import(pathToFileURL(cfgPath).href)).default;
   const defined = loadTables(path.join(root, 'i18n'));
-  const locales = Object.keys(defined);
+  // 先归一 —— status 打错要在做任何检查之前就炸,不然会得到一份「看起来通过了」的报告。
+  const declared = normalizeLocales(cfg.locales);
+  const statusOf = new Map(declared.map((l) => [l.code, l.status]));
+  // 真值以 i18n/ 下实际目录为准;发布状态取自声明,没声明的按 draft。
+  const locales = Object.keys(defined).map((code) => ({ code, status: statusOf.get(code) ?? 'draft' }));
   const namespaces = [...new Set(Object.keys(defined[FALLBACK] || {}).map((k) => k.split('.')[0]))];
   const used = collectUsedKeys({ root, scan: cfg.scan, namespaces });
   const { errors, warnings, info } = analyze({ defined, used, locales });
-  // cfg.locales 是声明清单;真值以 i18n/ 目录为准,这里做交叉校验——声明了却没建目录必须报错。
-  if (cfg.locales) {
-    for (const loc of cfg.locales) {
-      if (!(loc in defined)) errors.push(`声明了语言 '${loc}' 但 i18n/${loc}/ 不存在`);
-    }
+  // cfg.locales 是声明清单,这里做反向交叉校验——声明了却没建目录必须报错。
+  for (const { code } of declared) {
+    if (!(code in defined)) errors.push(`声明了语言 '${code}' 但 i18n/${code}/ 不存在`);
   }
+  // 语言包里的非文本交付物(模型/词表/prompt/锚点词)。未配置 assets 时整段跳过。
+  const av = checkAssets({ root, assets: cfg.assets, locales });
+  errors.push(...av.errors);
+  warnings.push(...av.warnings);
   for (const s of info) console.log('  · ' + s);
   for (const s of warnings) console.log('  \x1b[33m!\x1b[0m ' + s);
   for (const s of errors) console.log('  \x1b[31m✗\x1b[0m ' + s);

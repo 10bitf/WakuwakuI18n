@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { analyze, collectUsedKeys } from '../src/check.js';
+import { analyze, collectUsedKeys, normalizeLocales } from '../src/check.js';
 
 test('analyze:用了未定义=错;定义未用=提示;非zh缺=清单;占位符不一致=错', () => {
   const r = analyze({
@@ -62,4 +62,60 @@ test('collectUsedKeys:t() 字面量、数据表 key 字面量、{{}} 模板占�
     namespaces: ['site'],
   }).sort();
   assert.deepEqual(used, ['site.hero.sub', 'site.hero.title', 'site.status.ok', 'site.tpl.slot']);
+});
+
+// ── 发布状态 ──────────────────────────────────────────────
+// 缺条目静默回退中文,在单语言项目里无害;多语言项目里它是「英文用户看到中文」,
+// 而那是没有任何闸门会拦的线上 bug。released 语言必须把 info 升成 error。
+
+test('normalizeLocales:字符串与对象两种写法,status 缺省 draft', () => {
+  assert.deepEqual(normalizeLocales(['zh']), [{ code: 'zh', status: 'draft' }]);
+  assert.deepEqual(normalizeLocales([{ code: 'en' }]), [{ code: 'en', status: 'draft' }]);
+  assert.deepEqual(normalizeLocales([{ code: 'en', status: 'released' }]), [{ code: 'en', status: 'released' }]);
+  assert.deepEqual(normalizeLocales(undefined), [], '不写 locales 不该炸');
+  assert.deepEqual(normalizeLocales([]), []);
+});
+
+// 打错的 status 若被当成 draft 咽下去,就是「以为守着、其实没守」——
+// 这个仓库对静默失败的态度是宁可炸(见 USAGE 第 7 节坑①)。
+test('normalizeLocales:status 打错立刻抛错,不静默当 draft', () => {
+  assert.throws(() => normalizeLocales([{ code: 'en', status: 'releases' }]), /releases/);
+  assert.throws(() => normalizeLocales([{ code: 'en', status: 'RELEASED' }]), /RELEASED/, '大小写不宽容');
+  assert.throws(() => normalizeLocales([{ status: 'draft' }]), /code/, '没有 code 也要炸');
+});
+
+test('analyze:draft 语言缺条目=info(不拦);released 语言缺条目=error(拦)', () => {
+  const defined = {
+    zh: { 'app.a': '甲', 'app.b': '乙' },
+    en: { 'app.a': 'A' },              // 缺 app.b
+  };
+  const used = ['app.a', 'app.b'];
+
+  const draft = analyze({ defined, used, locales: ['zh', { code: 'en', status: 'draft' }] });
+  assert.equal(draft.errors.length, 0, 'draft 不许拦——边翻边上是允许的');
+  assert.equal(draft.info.filter((i) => i.includes('en 缺 1 条')).length, 1);
+
+  const released = analyze({ defined, used, locales: ['zh', { code: 'en', status: 'released' }] });
+  assert.equal(released.info.filter((i) => i.includes('en 缺')).length, 0, '升成 error 后不该再重复报 info');
+  assert.equal(released.errors.filter((e) => e.includes('en 缺 1 条')).length, 1);
+  assert.match(released.errors.find((e) => e.includes('en 缺')), /已发布/, '报错要说清为什么这次拦了');
+});
+
+test('analyze:纯字符串 locales 行为与改动前逐字相同(向后兼容)', () => {
+  const r = analyze({
+    defined: { zh: { 'app.a': '甲', 'app.b': '乙' }, en: { 'app.a': 'A' } },
+    used: ['app.a', 'app.b'],
+    locales: ['zh', 'en'],
+  });
+  assert.equal(r.errors.length, 0, 'Wakuwaku / Photoman 一行都不用改');
+  assert.equal(r.info.filter((i) => i.includes('en 缺 1 条')).length, 1);
+});
+
+test('analyze:released 语言条目齐全就不报——拦的是缺失,不是发布状态本身', () => {
+  const r = analyze({
+    defined: { zh: { 'app.a': '甲' }, en: { 'app.a': 'A' } },
+    used: ['app.a'],
+    locales: ['zh', { code: 'en', status: 'released' }],
+  });
+  assert.equal(r.errors.length, 0);
 });

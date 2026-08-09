@@ -16,6 +16,25 @@ export const placeholders = (s) => {
 };
 export const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const STATUSES = new Set(['draft', 'released']);
+
+// locales 的两种写法归一成 { code, status }。'zh' 与 { code:'zh' } 等价,status 缺省 draft
+// —— 这保证既有消费方(Wakuwaku / Photoman 都写 ['zh'])一行都不用改。
+//
+// status 打错**立刻抛错,不静默当 draft**:静默降级的后果是「以为守着、其实没守」,
+// 那正是 USAGE 第 7 节坑① 记的那类事故——检查静默变空操作,比检查失败危险得多。
+export function normalizeLocales(locales) {
+  return (locales || []).map((l) => {
+    const o = typeof l === 'string' ? { code: l } : l;
+    if (!o || !o.code) throw new Error(`locales 项缺 code: ${JSON.stringify(l)}`);
+    const status = o.status ?? 'draft';
+    if (!STATUSES.has(status)) {
+      throw new Error(`locales '${o.code}' 的 status 只能是 draft / released,收到 '${status}'`);
+    }
+    return { code: o.code, status };
+  });
+}
+
 export function analyze({ defined, used, locales }) {
   const errors = [], warnings = [], info = [];
   const base = defined[FALLBACK] || {};
@@ -26,11 +45,17 @@ export function analyze({ defined, used, locales }) {
   for (const k of Object.keys(base)) {
     if (!usedSet.has(k)) warnings.push(`定义了但没人用: ${k}`);
   }
-  for (const loc of locales) {
+  for (const { code: loc, status } of normalizeLocales(locales)) {
     if (loc === FALLBACK) continue;
     const tbl = defined[loc] || {};
     const missing = Object.keys(base).filter((k) => !(k in tbl));
-    if (missing.length) info.push(`${loc} 缺 ${missing.length} 条: ${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ' …' : ''}`);
+    if (missing.length) {
+      const list = `${loc} 缺 ${missing.length} 条: ${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ' …' : ''}`;
+      // draft 是「边翻边上」,缺条目运行时回退中文,只提示。
+      // released 是已经对外的语言,回退中文 = 英文用户看到中文,必须拦在出包之前。
+      if (status === 'released') errors.push(`${list}（已发布语言，缺条目会回退到 ${FALLBACK}）`);
+      else info.push(list);
+    }
     for (const k of Object.keys(base)) {
       if (!(k in tbl)) continue;
       const a = placeholders(base[k]), b = placeholders(tbl[k]);
