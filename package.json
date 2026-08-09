@@ -10,12 +10,14 @@
       "default": "./src/load.js"
     },
     "./i18next-preset": {
+      "types": "./src/i18next-preset.d.ts",
       "default": "./src/i18next-preset.js"
     },
     "./exempt": {
       "default": "./src/exempt.js"
     },
     "./scan": {
+      "types": "./src/scan.d.ts",
       "default": "./src/scan.js"
     }
   },
