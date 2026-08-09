@@ -68,7 +68,10 @@ import { fileExemptReason, splitByLineExemption } from 'wakuwaku-i18n/exempt' //
 
 ## 规矩（与 Photoman 一致）
 
-1. 变量用 {名字},不要用位置。
+1. 变量用具名占位符 `{name}`,不要用位置。**名字必须是 ASCII**
+   (`[A-Za-z_][A-Za-z0-9_]*`,判据在 `src/check.js` 的 `placeholders`)——
+   写成 `{次数}` 不会报错,i18next 照样替换得好好的,**但「占位符跨语言不一致」
+   那道 error 会静默失效**,而那道闸正是为 AI 翻译翻车加的。
 2. 以 _ 开头的键是给人看的说明,不进文案表。
 3. 不把 HTML 标记写进文案值;需要强调就拆 key,标记留在模板里。
 4. 加了文案就要在代码里用,否则 check 提示"定义了没人用"。
