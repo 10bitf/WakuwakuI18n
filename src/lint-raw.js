@@ -305,6 +305,20 @@ function maskHtmlComments(code) {
   return code.replace(/<!--[\s\S]*?-->/g, mask);
 }
 
+// Astro 模板区的第二种注释:{/* ... */}(JSX 风格)。
+//
+// 为什么要认它:它与 <!-- --> 的关键差别是**不进 HTML 产物**。写给自己看的设计说明
+// 该用这一种 —— 否则整段内部推理会随页面发给每个访客(实际发生过:某站首页因此
+// 携带 1.1KB 中文设计注释,还一度把已删掉的文案和另一个主体的域名带了出去)。
+// 工具不认它,等于逼作者在「注释被扫成裸文案」和「注释发给用户」之间二选一。
+//
+// **只对 .astro 开**:Vue/HTML 模板里 {/* */} 不是注释而是普通文本,
+// 在那里认它会把真文案遮进漏检侧 —— 漏检比误报危险,所以按扩展名精确开关。
+// fail-safe 与 HTML 注释同向:非贪婪匹配,不闭合就不遮蔽。
+function maskJsxComments(code) {
+  return code.replace(/\{\/\*[\s\S]*?\*\/\}/g, mask);
+}
+
 // ---------- <style> 区 / 独立样式文件(.scss/.css):遮蔽注释,字符串与 url() 感知 ----------
 // SCSS 有 // 行注释;但 // 也合法出现在字符串("//x")与未加引号的 url(//host/x) 里,
 // 那两处若误当注释会把真文案遮进漏检侧(content:"中文" 是用户可见文案)。
@@ -428,7 +442,11 @@ function maskJsonNonProse(src) {
 }
 
 // ---------- .astro:frontmatter + <script> 按脚本区处理,<style> 只遮蔽 CSS 注释,其余模板区只遮蔽 HTML 注释 ----------
-function maskAstro(src) {
+function maskAstro(src, opts = {}) {
+  // 模板区的注释形态:HTML 注释永远认;JSX 注释只有 .astro 认(见 maskJsxComments)
+  const maskTemplate = opts.jsxComments
+    ? (code) => maskJsxComments(maskHtmlComments(code))
+    : maskHtmlComments;
   const regions = []; // { start, end, type: 'script' | 'style' }
 
   const fm = /^---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/d.exec(src);
@@ -457,12 +475,12 @@ function maskAstro(src) {
   let cursor = 0;
   for (const r of regions) {
     if (r.start < cursor) continue; // 防御:异常重叠(不应发生)时跳过,不越界重算
-    result += maskHtmlComments(src.slice(cursor, r.start));
+    result += maskTemplate(src.slice(cursor, r.start));
     const body = src.slice(r.start, r.end);
     result += r.type === 'script' ? maskScriptRegion(body) : maskStyleComments(body);
     cursor = r.end;
   }
-  result += maskHtmlComments(src.slice(cursor));
+  result += maskTemplate(src.slice(cursor));
   return result;
 }
 
@@ -474,7 +492,9 @@ export function maskNonProse(src, ext) {
   if (e === '.scss' || e === '.css') return maskStyleComments(String(src));
   // .astro/.vue/.html 同为"模板 + <script> + <style>"结构,共用四区管线
   // (.vue/.html 没有 --- frontmatter,maskAstro 的围栏检测自然不匹配,直接复用即可)
-  if (e === '.astro' || e === '.vue' || e === '.html' || e === '.htm') return maskAstro(String(src));
+  // .astro 多认一种模板注释({/* */}),Vue/HTML 不认 —— 理由见 maskJsxComments
+  if (e === '.astro') return maskAstro(String(src), { jsxComments: true });
+  if (e === '.vue' || e === '.html' || e === '.htm') return maskAstro(String(src));
   return maskHtmlComments(String(src));            // 未知扩展名:保守只遮 HTML 注释
 }
 

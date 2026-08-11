@@ -419,3 +419,38 @@ test('maskNonProse(.vue):<style lang="scss"> 的 // 行注释被遮蔽', () => {
   const src = '<template><view/></template>\n<style lang="scss">\n// 注:中文\n.a { color: red; }\n</style>';
   assert.deepEqual(findRawHan(maskNonProse(src, '.vue')), []);
 });
+
+// ---------- Astro 模板的 JSX 注释 {/* */}:只在 .astro 认,Vue/HTML 不认 ----------
+test('maskNonProse(.astro):模板区 {/* */} 当注释遮蔽', () => {
+  const src = '<div>{/* 说明:中文一 */}</div>\n<p>{t("k")}</p>';
+  assert.deepEqual(findRawHan(maskNonProse(src, '.astro')), []);
+});
+
+test('maskNonProse(.astro):跨行 {/* */} 整段遮蔽,且等长', () => {
+  const src = '<div>\n  {/* 第一行中文\n     第二行中文 */}\n</div>';
+  const masked = maskNonProse(src, '.astro');
+  assert.equal(masked.length, src.length);
+  assert.deepEqual(findRawHan(masked), []);
+});
+
+test('maskNonProse(.astro):{/* */} 之外的中文照常命中(不能遮过头)', () => {
+  const src = '<div>{/* 注释中文 */}裸露中文</div>';
+  const hits = findRawHan(maskNonProse(src, '.astro'));
+  assert.deepEqual(hits.map((h) => h.line), [1]);
+});
+
+test('maskNonProse(.astro):不闭合的 {/* 不遮蔽(fail-safe,与 HTML 注释同向)', () => {
+  const src = '<div>{/* 未闭合:中文\n<p>x</p>';
+  assert.deepEqual(findRawHan(maskNonProse(src, '.astro')).map((h) => h.line), [1]);
+});
+
+test('maskNonProse(.vue/.html):{/* */} 不是注释,中文必须照常命中(漏检侧防线)', () => {
+  const src = '<template><div>{/* 中文 */}</div></template>';
+  assert.deepEqual(findRawHan(maskNonProse(src, '.vue')).map((h) => h.line), [1]);
+  assert.deepEqual(findRawHan(maskNonProse('<div>{/* 中文 */}</div>', '.html')).map((h) => h.line), [1]);
+});
+
+test('maskNonProse(.astro):<script> 区里的 {/* */} 走脚本规则,不受影响', () => {
+  const src = '<script>\nconst s = "{/* 字符串里的中文 */}";\n</script>';
+  assert.deepEqual(findRawHan(maskNonProse(src, '.astro')).map((h) => h.line), [2]);
+});
