@@ -119,3 +119,71 @@ test('analyze:released 语言条目齐全就不报——拦的是缺失,不是�
   });
   assert.equal(r.errors.length, 0);
 });
+
+// ---------- 前缀式使用(动态拼 key) ----------
+// 起因:Photoman 里 t('app.uilab.sc.' + s) / KNOWS=['app.scout.wait.k1'] 后接 '.t'
+// 这类写法,让同一个事实被判了两次相反的罪——前缀被当成完整 key 报「未定义」,
+// 真正的叶子又因为没人以完整形式引用被报「没人用」。9 条红把 push 整个卡死。
+
+test('analyze:带尾点的前缀覆盖名下叶子——t(前缀 + 变量) 不该报未定义', () => {
+  const r = analyze({
+    defined: { zh: { 'app.uilab.sc.waitA': '甲', 'app.uilab.sc.waitC': '丙' } },
+    used: ['app.uilab.sc.'],
+    locales: ['zh'],
+  });
+  assert.equal(r.errors.length, 0, '前缀名下有叶子就不算未定义');
+  assert.equal(r.warnings.length, 0, '叶子被前缀覆盖,不该再报没人用');
+});
+
+test('analyze:不带尾点的前缀同样覆盖——状态表里存前缀、后面再接段的写法', () => {
+  const r = analyze({
+    defined: { zh: { 'app.scout.wait.k1.t': '甲', 'app.scout.wait.k1.b': '乙' } },
+    used: ['app.scout.wait.k1'],
+    locales: ['zh'],
+  });
+  assert.equal(r.errors.length, 0);
+  assert.equal(r.warnings.length, 0);
+});
+
+test('analyze:名下一个叶子都没有的前缀照报未定义——拼错仍然抓得住', () => {
+  const r = analyze({
+    defined: { zh: { 'app.scout.wait.k1.t': '甲' } },
+    used: ['app.scout.wat.', 'app.scout.wa'],
+    locales: ['zh'],
+  });
+  assert.equal(r.errors.filter((e) => e.includes('app.scout.wat.')).length, 1, '拼错的前缀要报');
+  assert.equal(r.errors.filter((e) => e.includes('app.scout.wa')).length, 2,
+    '半个段不算前缀:必须整段对齐(前缀+点),否则 app.scout.wa 会白白盖住 wait 一族');
+});
+
+test('analyze:精确命中优先于前缀——新规则不许把既有的严格度放松', () => {
+  const r = analyze({
+    defined: { zh: { 'app.a.b': '甲', 'app.a.b.c': '乙' } },
+    used: ['app.a.b'],
+    locales: ['zh'],
+  });
+  assert.equal(r.errors.length, 0);
+  assert.equal(r.warnings.filter((w) => w.includes('app.a.b.c')).length, 1,
+    '精确写法只覆盖它自己,子孙照旧报没人用');
+});
+
+test('analyze:尾点写法永远当前缀——t("a.b." + x) 拼不出 a.b 本身', () => {
+  const r = analyze({
+    defined: { zh: { 'app.a.b': '甲', 'app.a.b.c': '乙' } },
+    used: ['app.a.b.'],
+    locales: ['zh'],
+  });
+  assert.equal(r.errors.length, 0);
+  assert.equal(r.warnings.filter((w) => w.includes('app.a.b')).length, 1);
+  assert.match(r.warnings[0], /app\.a\.b$/, '被盖住的是子孙 a.b.c,a.b 自己仍然没人用');
+});
+
+test('collectUsedKeys:t(前缀 + 变量) 里的尾点字面量要被收进来(端到端)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wki18n-prefix-'));
+  fs.mkdirSync(path.join(dir, 'src'));
+  fs.writeFileSync(path.join(dir, 'src', 'a.vue'),
+    `<view>{{ t('app.uilab.sc.' + s) }}</view>\n`);
+  const keys = collectUsedKeys({ root: dir, scan: [{ dir: 'src', exts: ['.vue'] }], namespaces: ['app'] });
+  assert.ok(keys.includes('app.uilab.sc.'), `尾点字面量要收进来,实收 ${JSON.stringify(keys)}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

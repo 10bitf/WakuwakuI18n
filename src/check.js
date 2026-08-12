@@ -39,11 +39,25 @@ export function analyze({ defined, used, locales }) {
   const errors = [], warnings = [], info = [];
   const base = defined[FALLBACK] || {};
   const usedSet = new Set(used);
-  for (const k of usedSet) {
-    if (!(k in base)) errors.push(`用了未定义的文案 key: ${k}（代码里在用，i18n/${FALLBACK}/ 里没有）`);
+  const baseKeys = Object.keys(base);
+  // 动态拼 key 的两种写法都算「用了那一族」:t('a.b.' + x) 收进来是带尾点的 'a.b.',
+  // 状态表里存 'a.b.k1' 后面再接 '.t' 收进来是不带尾点的前缀。两者都不是完整 key,
+  // 旧逻辑会把它报成未定义,同时把真正的叶子报成没人用 —— 同一个事实判两次相反的罪。
+  //
+  // 判据:前缀名下**至少有一个已定义的叶子**才算数,一个都没有仍然报未定义。
+  // 所以拼错的前缀照样抓得住,这条规则比旧的更严,不是更松。
+  // 段必须整段对齐(比 `前缀 + '.'`),否则 'app.scout.wa' 会白白盖住 wait 一族。
+  const covered = new Set();
+  for (const raw of usedSet) {
+    const bare = raw.replace(/\.+$/, '');
+    // 尾点是「后面还要接段」的明证,那就永远拼不出 bare 自己,不许精确命中
+    if (!/\.$/.test(raw) && bare in base) { covered.add(bare); continue; }
+    const kids = baseKeys.filter((k) => k.startsWith(`${bare}.`));
+    if (kids.length) for (const k of kids) covered.add(k);
+    else errors.push(`用了未定义的文案 key: ${raw}（代码里在用，i18n/${FALLBACK}/ 里没有）`);
   }
-  for (const k of Object.keys(base)) {
-    if (!usedSet.has(k)) warnings.push(`定义了但没人用: ${k}`);
+  for (const k of baseKeys) {
+    if (!covered.has(k)) warnings.push(`定义了但没人用: ${k}`);
   }
   for (const { code: loc, status } of normalizeLocales(locales)) {
     if (loc === FALLBACK) continue;
