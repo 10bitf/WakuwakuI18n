@@ -187,3 +187,83 @@ test('collectUsedKeys:t(前缀 + 变量) 里的尾点字面量要被收进来(�
   assert.ok(keys.includes('app.uilab.sc.'), `尾点字面量要收进来,实收 ${JSON.stringify(keys)}`);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── i18next 复数变体（2026-09-08 补的洞）────────────────────────────
+// 中文没有单复数,所以 zh 里是一条 key;英语要拆 _one/_other,阿拉伯语要拆六条。
+// 补之前只按 `k in tbl` 判,于是一个假阳性 + 一个假阴性,而后者是静默的。
+
+test('analyze:复数变体算「这条有了」—— released 语种不再误报缺条目', () => {
+  const r = analyze({
+    defined: {
+      zh: { 'a.n': '{n} 站' },
+      en: { 'a.n_one': '{n} race', 'a.n_other': '{n} races' },
+    },
+    used: ['a.n'],
+    locales: ['zh', { code: 'en', status: 'released' }],
+  });
+  // 补之前:en 被判成「缺 1 条」,而 released 的缺条目是 error —— 正常写法挡住出包
+  assert.equal(r.errors.filter((e) => e.includes('缺')).length, 0, '复数写法不该被判成缺条目');
+  assert.equal(r.info.filter((i) => i.includes('缺')).length, 0);
+});
+
+test('analyze:**每个**复数变体的占位符都要单独比 —— 这是补之前完全没查的那块', () => {
+  const r = analyze({
+    defined: {
+      zh: { 'a.n': '{n} 站' },
+      // AI 翻译的典型翻车:_other 保住了 {n},_one 写成 "one race" 把它丢了
+      en: { 'a.n_one': 'one race', 'a.n_other': '{n} races' },
+    },
+    used: ['a.n'],
+    locales: ['zh', 'en'],
+  });
+  const hit = r.errors.filter((e) => e.includes('占位符不一致') && e.includes('a.n_one'));
+  assert.equal(hit.length, 1, '_one 丢了 {n} 必须报');
+  // 只比其中一条是漏得掉的 —— _other 是对的,不该跟着报
+  assert.equal(r.errors.filter((e) => e.includes('a.n_other')).length, 0);
+});
+
+test('analyze:序数变体（_ordinal_*）同样认 —— 英语的 1st/2nd/3rd/11th', () => {
+  const r = analyze({
+    defined: {
+      zh: { 'a.p': '第 {n} 位' },
+      en: { 'a.p_ordinal_one': '{n}st', 'a.p_ordinal_two': '{n}nd', 'a.p_ordinal_few': '{n}rd', 'a.p_ordinal_other': '{n}th' },
+    },
+    used: ['a.p'],
+    locales: ['zh', { code: 'en', status: 'released' }],
+  });
+  assert.equal(r.errors.length, 0, JSON.stringify(r.errors));
+});
+
+test('analyze:阿拉伯语六种复数类别全认', () => {
+  const cats = ['zero', 'one', 'two', 'few', 'many', 'other'];
+  const ar = {};
+  for (const c of cats) ar[`a.n_${c}`] = `{n} سباق`;
+  const r = analyze({
+    defined: { zh: { 'a.n': '{n} 站' }, ar },
+    used: ['a.n'],
+    locales: ['zh', { code: 'ar', status: 'released' }],
+  });
+  assert.equal(r.errors.length, 0, JSON.stringify(r.errors));
+});
+
+test('analyze:后缀打错报 orphan —— 正向检查看不见这种', () => {
+  const r = analyze({
+    defined: {
+      zh: { 'a.n': '{n} 站' },
+      en: { 'a.n_other': '{n} races', 'a.n_ones': 'one race' },   // _ones 打错了
+    },
+    used: ['a.n'],
+    locales: ['zh', 'en'],
+  });
+  // a.n 因为有 _other 不算缺,而 _ones 永远不会被取到 —— 补之前两头都不报
+  assert.equal(r.warnings.filter((w) => w.includes('a.n_ones')).length, 1);
+});
+
+test('analyze:一个变体都没有才算缺 —— 别把新规则放松成什么都不报', () => {
+  const r = analyze({
+    defined: { zh: { 'a.n': '{n} 站', 'a.m': '甲' }, en: { 'a.n_other': '{n} races' } },
+    used: ['a.n', 'a.m'],
+    locales: ['zh', { code: 'en', status: 'released' }],
+  });
+  assert.equal(r.errors.filter((e) => e.includes('缺 1 条') && e.includes('a.m')).length, 1);
+});

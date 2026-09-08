@@ -16,6 +16,38 @@ export const placeholders = (s) => {
 };
 export const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// i18next 的复数类别(JSON v4)。取自 Intl.PluralRules,不同语言用到的子集不同:
+// **中文只有 other**、英德是 one/other、**阿拉伯语六种全用**。
+// 序数另有一层 `_ordinal_`(英语的 1st/2nd/3rd/11th)。
+// 这份表是 2026-09-08 在 i18next 26.3.6 上实跑确认的,不是照记忆写的。
+const PLURAL_CATS = ['zero', 'one', 'two', 'few', 'many', 'other'];
+
+/**
+ * 一个 base key 在目标语种里**可能的实现名**:本名 + 复数变体 + 序数变体。
+ *
+ * # 为什么需要它
+ *
+ * 中文没有单复数,所以 `zh` 里 `{n} 站` 是**一条** key;到了英语要拆成
+ * `k_one`/`k_other`,到阿拉伯语要拆成六条。只按 `k in tbl` 判的话:
+ *
+ *   ① **假阳性**:那些语种会被判成「缺条目」,而 released 语种的缺条目是 error,
+ *      于是一个完全正常的复数写法会**挡住出包**;
+ *   ② **假阴性且静默**:紧接着的 `if (!(k in tbl)) continue` 把占位符比对整个跳过,
+ *      于是**复数键的占位符完全不受检查** —— 而占位符漂移正是这道检查存在的唯一理由,
+ *      且源码注释点名的高危来源就是 AI 翻译。
+ *
+ * ②比①危险得多:①会红、会被发现,②是安静的。
+ */
+export function variantsOf(key, tbl) {
+  const out = [];
+  if (key in tbl) out.push(key);
+  for (const c of PLURAL_CATS) {
+    if (`${key}_${c}` in tbl) out.push(`${key}_${c}`);
+    if (`${key}_ordinal_${c}` in tbl) out.push(`${key}_ordinal_${c}`);
+  }
+  return out;
+}
+
 const STATUSES = new Set(['draft', 'released']);
 
 // locales 的两种写法归一成 { code, status }。'zh' 与 { code:'zh' } 等价,status 缺省 draft
@@ -62,7 +94,28 @@ export function analyze({ defined, used, locales }) {
   for (const { code: loc, status } of normalizeLocales(locales)) {
     if (loc === FALLBACK) continue;
     const tbl = defined[loc] || {};
-    const missing = Object.keys(base).filter((k) => !(k in tbl));
+    const missing = [];
+    const claimed = new Set();
+    for (const k of Object.keys(base)) {
+      // 复数/序数变体也算「这条有了」—— 见 variantsOf 的头注
+      const impl = variantsOf(k, tbl);
+      if (!impl.length) { missing.push(k); continue; }
+      const a = placeholders(base[k]);
+      for (const vk of impl) {
+        claimed.add(vk);
+        const b = placeholders(tbl[vk]);
+        // 比出现次数,不只比有没有 —— 见 placeholders 上方注释。
+        // **每个复数变体都要单独比**:AI 翻译很可能只在 _other 里保住占位符,
+        // 而 _one 写成 "one item" 把 {n} 丢了 —— 只比其中一条是漏得掉的。
+        const diff = [...new Set([...a.keys(), ...b.keys()])]
+          .filter((p) => (a.get(p) || 0) !== (b.get(p) || 0))
+          .map((p) => `${p}(${a.get(p) || 0}→${b.get(p) || 0})`);
+        if (diff.length) {
+          const where = vk === k ? k : `${vk}（${FALLBACK} 的 ${k}）`;
+          errors.push(`占位符不一致 ${where}（${FALLBACK} vs ${loc}）: ${diff.join(', ')}`);
+        }
+      }
+    }
     if (missing.length) {
       const list = `${loc} 缺 ${missing.length} 条: ${missing.slice(0, 10).join(', ')}${missing.length > 10 ? ' …' : ''}`;
       // draft 是「边翻边上」,缺条目运行时回退中文,只提示。
@@ -70,14 +123,13 @@ export function analyze({ defined, used, locales }) {
       if (status === 'released') errors.push(`${list}（已发布语言，缺条目会回退到 ${FALLBACK}）`);
       else info.push(list);
     }
-    for (const k of Object.keys(base)) {
-      if (!(k in tbl)) continue;
-      const a = placeholders(base[k]), b = placeholders(tbl[k]);
-      // 比出现次数,不只比有没有 —— 见 placeholders 上方注释
-      const diff = [...new Set([...a.keys(), ...b.keys()])]
-        .filter((p) => (a.get(p) || 0) !== (b.get(p) || 0))
-        .map((p) => `${p}(${a.get(p) || 0}→${b.get(p) || 0})`);
-      if (diff.length) errors.push(`占位符不一致 ${k}（${FALLBACK} vs ${loc}）: ${diff.join(', ')}`);
+    // 反向:目标语种里有、却不属于任何 base key 的条目。
+    // **复数后缀打错(`k_ones`)时正向检查完全看不见** —— 那一条永远不会被取到,
+    // 而 `k` 又因为还有 `k_other` 而不算缺,于是两头都不报。只报 warning:
+    // 有些项目会在某个语种里放它自己的补充条目,那不算错。
+    const orphans = Object.keys(tbl).filter((k) => !claimed.has(k));
+    if (orphans.length) {
+      warnings.push(`${loc} 有 ${orphans.length} 条不属于任何 ${FALLBACK} key（复数后缀打错的话会长这样）: ${orphans.slice(0, 10).join(', ')}${orphans.length > 10 ? ' …' : ''}`);
     }
   }
   return { errors, warnings, info };
