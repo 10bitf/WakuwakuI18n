@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadTables } from '../src/load.js';
-import { analyze, collectUsedKeys, normalizeLocales } from '../src/check.js';
+import { analyze, collectUsedKeys, normalizeLocales, checkInlangCoverage } from '../src/check.js';
 import { checkAssets } from '../src/assets.js';
 
 const FALLBACK = 'zh';
@@ -30,6 +30,11 @@ async function main() {
     if (!(code in defined)) errors.push(`声明了语言 '${code}' 但 i18n/${code}/ 不存在`);
   }
   // 语言包里的非文本交付物(模型/词表/prompt/锚点词)。未配置 assets 时整段跳过。
+  // inlang 工程与 i18n/ 下实际文件的交叉校验。没有 project.inlang/ 就整段跳过。
+  // 必须有:pathPattern 不支持通配,每个命名空间都得手写一条 —— 漏登记是**静默**的
+  // (本检查按目录读表照旧绿,Paraglide 那边直接不编那个文件)。
+  errors.push(...checkInlangCoverage({ root, locales: locales.map((l) => l.code) }));
+
   const av = checkAssets({ root, assets: cfg.assets, locales });
   errors.push(...av.errors);
   warnings.push(...av.warnings);

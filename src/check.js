@@ -221,3 +221,81 @@ export function collectUsedKeys({ root, scan, namespaces, engine }) {
   for (const s of scan) walk(path.resolve(root, s.dir), s.exts);
   return [...keys];
 }
+
+/**
+ * inlang 工程的 `pathPattern` 与 `i18n/` 下的实际文件**必须一一对上**。
+ *
+ * # 为什么这道闸是必须的，不是锦上添花
+ *
+ * `@inlang/plugin-icu1` 的 `pathPattern` **不支持通配符** —— 它的 schema 是
+ * `.*\{locale\}.*\.json$`，解析时只做一次字面替换（没有 glob、没有 `g` 标志）。
+ * 于是**每个命名空间都得手写一条数组项**：Racing 2 条、Photoman 3 条、Dirty 5 条。
+ *
+ * 也就是说「加了一个命名空间、忘了在 settings.json 里登记」不是什么边缘情况 ——
+ * **它是「加命名空间」这个动作唯一可能的失败姿态**，每加一个文件都要撞一次。
+ *
+ * 而失败是**静默的**：`check` 照旧绿（它按目录读表），Paraglide 那边直接不编那个文件，
+ * 于是那一整批 key 在运行时全是 `undefined`。两边各看各的真源，谁也不知道对方漏了。
+ *
+ * # 反过来也查
+ *
+ * `pathPattern` 里写了、`i18n/` 下却没有的文件同样报 —— 那多半是改名之后忘了同步，
+ * 表现是「这个命名空间的文案怎么全没了」。
+ *
+ * @param {{ root: string, locales: string[] }} args
+ * @returns {string[]} 问题清单；没有 inlang 工程时返回空数组（这道闸只对用它的项目生效）
+ */
+export function checkInlangCoverage({ root, locales }) {
+  const settingsPath = path.join(root, 'project.inlang', 'settings.json');
+  if (!fs.existsSync(settingsPath)) return [];
+
+  let settings;
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) } catch (e) {
+    return [`project.inlang/settings.json 解析失败: ${String(e).split('\n')[0]}`];
+  }
+
+  // pathPattern 藏在插件自己的配置块里，而块名随插件而变
+  // （plugin.inlang.icu-messageformat-1 / .messageFormat / .i18next）。
+  // 扫所有 `plugin.` 开头的块，不写死某一个 —— 换存储插件时这道闸不该跟着坏。
+  const patterns = [];
+  for (const [k, v] of Object.entries(settings)) {
+    if (!k.startsWith('plugin.') || !v || typeof v !== 'object') continue;
+    const p = v.pathPattern;
+    if (typeof p === 'string') patterns.push(p);
+    else if (Array.isArray(p)) patterns.push(...p.filter((x) => typeof x === 'string'));
+  }
+  if (!patterns.length) {
+    return ['project.inlang/settings.json 里没有任何插件配置了 pathPattern —— Paraglide 一条文案都编不出来'];
+  }
+
+  const problems = [];
+  const declared = new Set();
+  for (const pat of patterns) {
+    for (const loc of locales) {
+      // 与插件同一口径:只做一次字面替换,不做 glob
+      const rel = pat.replace('{locale}', loc).replace(/^\.\//, '');
+      declared.add(rel.split(path.sep).join('/'));
+      if (!fs.existsSync(path.join(root, rel))) {
+        problems.push(`pathPattern 里写了 ${rel}，但文件不存在（改名之后忘了同步？那一整批文案会全空）`);
+      }
+    }
+  }
+
+  // 反方向:目录里有、pathPattern 没登记 —— Paraglide 直接不编它，而 check 照旧绿
+  const i18nDir = path.join(root, 'i18n');
+  for (const loc of locales) {
+    const ld = path.join(i18nDir, loc);
+    if (!fs.existsSync(ld)) continue;
+    for (const f of fs.readdirSync(ld)) {
+      // `_` 开头的不是文案表（`_notes.json` 是说明档）——与 loadTables 同一条规矩。
+      // 顺带:pathPattern 没有通配能力，所以它**结构上**不可能把 _notes.json 读进去。
+      if (!f.endsWith('.json') || f.startsWith('_')) continue;
+      const rel = `i18n/${loc}/${f}`;
+      if (!declared.has(rel)) {
+        problems.push(`${rel} 没在 project.inlang/settings.json 的 pathPattern 里登记 —— ` +
+          `Paraglide 不会编它，那一整批 key 运行时全是 undefined（而本检查按目录读表，看不出来）`);
+      }
+    }
+  }
+  return problems;
+}

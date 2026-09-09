@@ -631,6 +631,26 @@ const KNOWS = ['app.scout.wait.k1'];  t(k + '.t')  // 采到 'app.scout.wait.k1'
 - 已知限制变动 → 第 8 节与 README「已知限制」两处一起改;
 - 接入步骤变了(脚本名、模板、钩子)→ 改第 2 节,并且**重新走一遍再写**,文档里跑不通的步骤是最严重的缺陷。
 
+### inlang 工程的 pathPattern 是第二份真源
+
+用 Paraglide 的项目,`check` 会额外交叉校验 `project.inlang/settings.json` 的 `pathPattern`
+与 `i18n/<语种>/*.json` 的实际文件(没有 `project.inlang/` 就整段跳过)。
+
+**为什么必须查**:`@inlang/plugin-icu1` 的 `pathPattern` **不支持通配符** ——
+schema 是 `.*\{locale\}.*\.json$`,解析时只做一次字面替换。所以**每个命名空间都得手写一条**
+(Racing 2 条、Photoman 3 条、Dirty 5 条)。于是「加了命名空间忘了登记」
+**不是边缘情况,是这个动作唯一可能的失败姿态**,而且它是**静默**的:
+本检查按目录读表照旧绿,Paraglide 那边直接不编那个文件,那一整批 key 运行时全是 `undefined`。
+
+反方向同样报:`pathPattern` 里写了、`i18n/` 下没有的文件 —— 那多半是改名忘了同步。
+
+⚠️ **另一条与它同源的坑**:`modules` 别指 `https://cdn.jsdelivr.net/...@latest`。
+`@inlang/sdk` 的加载策略是 **Network-First**(每次构建先打网,只有失败才读缓存),
+而缓存目录不入库。三条叠起来 = 干净克隆/CI 必须联网 + **编译器版本可以在两次构建之间
+悄悄换掉且 lockfile 无痕**。改成 `./node_modules/@inlang/plugin-icu1/dist/index.js`
+并装成 devDependency,由 lockfile 管住。⚠️ 路径基准是**仓库根**不是 `project.inlang/`,
+写错**不报错、只是编出 0 条**。
+
 `tools/doc-check.mjs` 会机械校验第 4/5 节契约表(含 CLI 表)与代码的一致性,**两个方向都查**:
 「表→代码」(表里写的字段/导出真实存在、「被谁读取」的文件真实存在且确实读了该字段、「从哪导入」与
 `exports` 对得上)与「代码→表」(`exports` 每个子路径的每一个具名导出,表里都得有对应那一行)。
