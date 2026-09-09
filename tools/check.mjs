@@ -23,8 +23,8 @@ async function main() {
   // 真值以 i18n/ 下实际目录为准;发布状态取自声明,没声明的按 draft。
   const locales = Object.keys(defined).map((code) => ({ code, status: statusOf.get(code) ?? 'draft' }));
   const namespaces = [...new Set(Object.keys(defined[FALLBACK] || {}).map((k) => k.split('.')[0]))];
-  const used = collectUsedKeys({ root, scan: cfg.scan, namespaces });
-  const { errors, warnings, info } = analyze({ defined, used, locales });
+  const used = collectUsedKeys({ root, scan: cfg.scan, namespaces, engine: cfg.engine });
+  const { errors, warnings, info } = analyze({ defined, used, locales, engine: cfg.engine });
   // cfg.locales 是声明清单,这里做反向交叉校验——声明了却没建目录必须报错。
   for (const { code } of declared) {
     if (!(code in defined)) errors.push(`声明了语言 '${code}' 但 i18n/${code}/ 不存在`);

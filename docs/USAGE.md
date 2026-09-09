@@ -393,6 +393,7 @@ lint-raw 命中时逐处列出`文件:行号:内容`,并给两条出路(实测�
 
 | 字段 | 必填 | 被谁读取 | 说明 |
 |---|---|---|---|
+| `engine` | 否(缺省 `'i18next'`) | `tools/check.mjs` | 取词引擎:`'i18next'` / `'compile'` / `'paraglide'`。**校验绕不开它** —— 得认出源码里哪些是取词调用,而三个引擎长得不一样。它决定三件事:① 认哪些取词形态(`t('a.b')` vs `m['a.b']()`);② key 能不能运行时拼出来(能→数据表里的裸 key 字符串算在用、前缀覆盖成立;不能→那两条从「正确」变成**误放行**,检查绿、应用坏);③ 复数是不是写在 key 后缀里(只有 i18next 是)。差异收在 `src/check.js` 的 `ENGINES` 一张表里,**加引擎是加一行不是改逻辑**。写错引擎名立刻抛,不静默当缺省 |
 | `tableFormat` | 否(缺省 `'nested'`) | `tools/check.mjs` | 取 `'nested'` 或 `'flat'`。文案表的形状:`nested`=文件内嵌套、命名空间由**文件名**自动加;`flat`=文件内扁平、前缀**写在 key 里**(`"app.nav.data": "赛季"`)。迁到 Paraglide 的项目用 `flat`——`@inlang/plugin-icu1` 只读扁平 JSON。**不自动识别**:嵌套表顶层也可以直接是字符串,两者结构上分不开,猜错会让整表前缀错位 |
 | `locales` | 否 | `tools/check.mjs` | 语言声明清单,兼收 `'zh'` 与 `{ code:'zh', status:'draft'\|'released' }` 两种写法(归一在 `src/check.js` 的 `normalizeLocales`)。真值以 `i18n/` 下实际目录为准,这一项做两件事:① 交叉校验,声明了却没建目录报 error;② 声明发布状态,决定缺条目/缺资源是提示还是拦截(见下)。`status` 缺省 `draft`;写了别的值**立刻抛错**,不静默降级 |
 | `assets` | 否 | `tools/check.mjs` | 语言包里的**非文本**交付物清单(声学模型、关键词表、prompt、锚点词)。数组,每项 `{ name, path }`;`path` 相对仓库根、**必须含 `{locale}`**(不含就抛错——那基本必是手误),按 `i18n/` 下实际语言目录展开。判据在 `src/assets.js` |

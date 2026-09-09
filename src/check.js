@@ -48,6 +48,50 @@ export function variantsOf(key, tbl) {
   return out;
 }
 
+/**
+ * 取词引擎之间的差异，**收在这一张表里**。
+ *
+ * 本框架的身份是文案的校验层，取词引擎是可选零件（见 `docs/USAGE.md` §5.0）。
+ * 但校验绕不开一件事：**它得认出源码里哪些是取词调用**，而不同引擎长得不一样。
+ *
+ * 做成一张表而不是散在各处的 `if`，是因为差异只有三条、而将来会加第四个引擎 ——
+ * **加一行，不是改逻辑**。散成 if 链的话，第四个引擎会让每一处都要重读一遍。
+ *
+ * | 字段 | 是什么 |
+ * |---|---|
+ * | `calls` | 源码里的取词形态。`t`=`t('a.b')`、`bracket`=`m['a.b']()`、`tpl`=`{{a.b}}` 模板占位 |
+ * | `dynamicKeys` | **key 能不能在运行时拼出来。** 决定两条规则开不开，见下 |
+ * | `pluralSuffixes` | 复数是不是写在 **key 后缀**里（`k_one`/`k_other`） |
+ *
+ * ## `dynamicKeys` 为什么把两条规则绑在一起
+ *
+ * i18next 与自建编译器都能 `t(变量)` —— 运行时按字符串查表。所以：
+ * ① 数据表里的裸 key 字符串（`{ titleKey: 'a.b.c' }`）**真的是在用**；
+ * ② `t('a.b.' + x)` 拼出来的前缀，只要名下有叶子就该算数。
+ *
+ * **Paraglide 两条都不成立**：它的产物是一条一个函数模块，没被 import 的会被 tree-shake 掉，
+ * 运行时 `m[变量]` 拿到 `undefined`。于是那两条规则从「正确」变成「误放行」——
+ * 检查绿、应用坏。这是最危险的一类失效，所以由引擎显式决定，不猜。
+ *
+ * ## `pluralSuffixes` 为什么不能一直开着
+ *
+ * ICU 的复数写在**消息内部**（`{n, plural, …}`），`step_one` 就是一条普通 key。
+ * 一直按 i18next 的后缀模型解读的话，`step_one` 会被当成 `step` 的复数变体，
+ * 拿去和 `step` 比占位符 —— **误报，而且同一条报两遍，还会拦住 released 语种出包。**
+ */
+export const ENGINES = {
+  i18next:   { calls: ['t', 'literal', 'tpl'], dynamicKeys: true,  pluralSuffixes: true },
+  compile:   { calls: ['t', 'literal', 'tpl'], dynamicKeys: true,  pluralSuffixes: false },
+  paraglide: { calls: ['bracket', 'tpl'],      dynamicKeys: false, pluralSuffixes: false },
+};
+
+/** 缺省 `i18next` —— 既有消费方都没写这个字段，默认值必须让它们的行为一个字都不变。 */
+export function engineOf(name) {
+  const e = ENGINES[name ?? 'i18next'];
+  if (!e) throw new Error(`未知的取词引擎 '${name}'，可选：${Object.keys(ENGINES).join(' / ')}`);
+  return e;
+}
+
 const STATUSES = new Set(['draft', 'released']);
 
 // locales 的两种写法归一成 { code, status }。'zh' 与 { code:'zh' } 等价,status 缺省 draft
@@ -67,7 +111,8 @@ export function normalizeLocales(locales) {
   });
 }
 
-export function analyze({ defined, used, locales }) {
+export function analyze({ defined, used, locales, engine }) {
+  const eng = engineOf(engine);
   const errors = [], warnings = [], info = [];
   const base = defined[FALLBACK] || {};
   const usedSet = new Set(used);
@@ -84,7 +129,9 @@ export function analyze({ defined, used, locales }) {
     const bare = raw.replace(/\.+$/, '');
     // 尾点是「后面还要接段」的明证,那就永远拼不出 bare 自己,不许精确命中
     if (!/\.$/.test(raw) && bare in base) { covered.add(bare); continue; }
-    const kids = baseKeys.filter((k) => k.startsWith(`${bare}.`));
+    // 前缀覆盖只在「key 能运行时拼出来」的引擎上成立 —— 见 ENGINES 的头注。
+    // Paraglide 下 m['a.b'] 是 undefined,放行它等于让检查绿着、应用坏着。
+    const kids = eng.dynamicKeys ? baseKeys.filter((k) => k.startsWith(`${bare}.`)) : [];
     if (kids.length) for (const k of kids) covered.add(k);
     else errors.push(`用了未定义的文案 key: ${raw}（代码里在用，i18n/${FALLBACK}/ 里没有）`);
   }
@@ -98,7 +145,9 @@ export function analyze({ defined, used, locales }) {
     const claimed = new Set();
     for (const k of Object.keys(base)) {
       // 复数/序数变体也算「这条有了」—— 见 variantsOf 的头注
-      const impl = variantsOf(k, tbl);
+      // 只对 i18next 成立:ICU 把复数写在消息内部,`step_one` 是一条普通 key,
+      // 按后缀解读会把它当成 `step` 的变体去比占位符 —— 误报、报两遍、还拦 released 出包。
+      const impl = eng.pluralSuffixes ? variantsOf(k, tbl) : (k in tbl ? [k] : []);
       if (!impl.length) { missing.push(k); continue; }
       const a = placeholders(base[k]);
       for (const vk of impl) {
@@ -135,7 +184,8 @@ export function analyze({ defined, used, locales }) {
   return { errors, warnings, info };
 }
 
-export function collectUsedKeys({ root, scan, namespaces }) {
+export function collectUsedKeys({ root, scan, namespaces, engine }) {
+  const forms = new Set(engineOf(engine).calls);
   const keys = new Set();
   const nsAlt = namespaces.map(escapeRe).join('|');
   // key 里允许连字符:`project.trash-talk.name` 这种是真实存在的
@@ -150,7 +200,8 @@ export function collectUsedKeys({ root, scan, namespaces }) {
   //    (key 里带点号时它不生成合法标识符的具名导出),所以迁过去之后取词长这样。
   //    要求方括号是关键:它把这条与「碰巧长得像 key 的字符串」分开,
   //    于是可以放宽到 `ns.x` 只有一段 —— `m['site.brand']` 是取词,而裸的 `'site.json'` 不是。
-  const bracketLit = new RegExp(`\\[\\s*['"]((?:${nsAlt})\\.${SEG}(?:\\.${SEG})*)['"]\\s*\\]`, 'g');
+  //    三种引号都认:codemod 或 Prettier 配置不同就会产出反引号形态,而它与单引号语义完全一样。
+  const bracketLit = new RegExp(`\\[\\s*['"\`]((?:${nsAlt})\\.${SEG}(?:\\.${SEG})*)['"\`]\\s*\\]`, 'g');
   const walk = (dir, exts) => {
     if (!fs.existsSync(dir)) return;
     for (const f of fs.readdirSync(dir)) {
@@ -159,10 +210,12 @@ export function collectUsedKeys({ root, scan, namespaces }) {
       if (fs.statSync(fp).isDirectory()) { walk(fp, exts); continue; }
       if (!exts.includes(path.extname(f))) continue;
       const src = fs.readFileSync(fp, 'utf8');
-      for (const m of src.matchAll(/\bt\(\s*['"]([A-Za-z][A-Za-z0-9_.-]*)['"]/g)) keys.add(m[1]);
-      for (const m of src.matchAll(keyLit)) keys.add(m[1]);
-      for (const m of src.matchAll(tplLit)) keys.add(m[1]);
-      for (const m of src.matchAll(bracketLit)) keys.add(m[1]);
+      // 形态按引擎挑 —— **认多了比认少了危险**:多认一条的后果是「检查绿、应用坏」,
+      // 少认一条的后果只是一条「定义了但没人用」的警告。见 ENGINES 的头注。
+      if (forms.has('t')) for (const m of src.matchAll(/\bt\(\s*['"]([A-Za-z][A-Za-z0-9_.-]*)['"]/g)) keys.add(m[1]);
+      if (forms.has('literal')) for (const m of src.matchAll(keyLit)) keys.add(m[1]);
+      if (forms.has('tpl')) for (const m of src.matchAll(tplLit)) keys.add(m[1]);
+      if (forms.has('bracket')) for (const m of src.matchAll(bracketLit)) keys.add(m[1]);
     }
   };
   for (const s of scan) walk(path.resolve(root, s.dir), s.exts);

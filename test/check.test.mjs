@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { analyze, collectUsedKeys, normalizeLocales } from '../src/check.js';
+import { analyze, collectUsedKeys, normalizeLocales, ENGINES, engineOf } from '../src/check.js';
 
 test('analyze:用了未定义=错;定义未用=提示;非zh缺=清单;占位符不一致=错', () => {
   const r = analyze({
@@ -65,12 +65,73 @@ test('collectUsedKeys:方括号取词与带连字符的 key', () => {
     // 裸字符串规则会把 'site.json' 这种文件名也当成取词)。
     + "const p = 'site.json';\n", 'utf8');
   try {
-    const used = collectUsedKeys({ root, scan: [{ dir: 'src', exts: ['.astro'] }], namespaces: ['site'] });
+    const used = collectUsedKeys({ root, scan: [{ dir: 'src', exts: ['.astro'] }], namespaces: ['site'], engine: 'paraglide' });
     assert.ok(used.includes('site.brand'), '方括号取词没认出来');
     assert.ok(used.includes('site.project.trash-talk.name'), '带连字符的 key 没认出来');
     assert.ok(used.includes('site.tag.voice'));
     assert.equal(used.includes('site.json'), false, '裸字符串不该算取词');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+// ── 引擎差异表 ──────────────────────────────────────────────
+// 差异只有三条,收在 ENGINES 一张表里。这几条测的是「按引擎挑」这件事本身,
+// 而不是某个引擎的细节 —— 加第四个引擎时，这几条应当原样成立。
+
+test('引擎表:缺省是 i18next —— 既有消费方都没写这个字段,默认值不许改变它们的行为', () => {
+  assert.equal(engineOf(undefined), ENGINES.i18next);
+  assert.throws(() => engineOf('lingui'), /未知的取词引擎/, '写错引擎名要立刻抛,不许静默当缺省');
+});
+
+test('🔴 Paraglide 下裸 key 字符串不算取词 —— 认多了会「检查绿、应用坏」', () => {
+  // 数据表里的 `{ titleKey: 'site.tag.voice' }`:i18next 时代 t(act.titleKey) 真能取到词,
+  // 所以那条规则那时是对的。Paraglide 下没有任何模块 import 这条消息,它会被 tree-shake 掉,
+  // 运行时 m[key] 拿到 undefined。**规则从「正确」变成「误放行」。**
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wkwk-eng-'));
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'data.js'),
+    "export const ACTS = [{ titleKey: 'site.tag.voice' }];\n", 'utf8');
+  try {
+    const opts = { root, scan: [{ dir: 'src', exts: ['.js'] }], namespaces: ['site'] };
+    assert.deepEqual(collectUsedKeys({ ...opts, engine: 'i18next' }), ['site.tag.voice'],
+      'i18next 下它真的是在用');
+    assert.deepEqual(collectUsedKeys({ ...opts, engine: 'compile' }), ['site.tag.voice'],
+      '自建编译器同样能 t(变量)');
+    assert.deepEqual(collectUsedKeys({ ...opts, engine: 'paraglide' }), [],
+      'Paraglide 下它不是取词 —— 报成「没人用」才是实话');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('🔴 Paraglide 下前缀覆盖要关掉 —— m[\'site.tag\'] 是 undefined,不是取词', () => {
+  const defined = { zh: { 'site.tag.voice': '语音', 'site.tag.text': '文字' } };
+  const args = { defined, used: ['site.tag'], locales: ['zh'] };
+  // i18next:t('site.tag.' + x) 是真能取到词的,前缀名下有叶子就算数
+  assert.deepEqual(analyze({ ...args, engine: 'i18next' }).errors, []);
+  // Paraglide:同一份输入必须报错 —— 那条 key 在运行时是 undefined
+  const r = analyze({ ...args, engine: 'paraglide' });
+  assert.equal(r.errors.length, 1);
+  assert.match(r.errors[0], /site\.tag/);
+});
+
+test('🔴 非 i18next 引擎不许把 `_one` 结尾的 key 当成复数变体', () => {
+  // ICU 把复数写在消息内部,`step_one` 就是一条普通 key。按后缀解读的话它会被
+  // 当成 `step` 的变体,拿去和 `step` 比占位符 —— 误报、报两遍、还拦 released 出包。
+  // 夹具刻意造成:两条 key **各自**中英对齐(step 都没占位符、step_one 都有 {n})。
+  // ICU 下这是一份完全正确的表,不该有任何 error;
+  // 而 i18next 会把 step_one 当成 step 的变体,拿 step 的占位符(0 个)去比 step_one 的(1 个)。
+  const defined = {
+    zh: { 'app.step': '步骤', 'app.step_one': '第 {n} 步' },
+    en: { 'app.step': 'Step', 'app.step_one': 'Step {n}' },
+  };
+  const args = { defined, used: ['app.step', 'app.step_one'], locales: [{ code: 'en', status: 'released' }] };
+
+  const i18nextErrs = analyze({ ...args, engine: 'i18next' }).errors;
+  assert.ok(i18nextErrs.length > 0, 'i18next 的后缀模型下它确实会报 —— 这正是要按引擎关掉的那条');
+  assert.ok(i18nextErrs.some((e) => /app\.step_one（zh 的 app\.step）/.test(e)),
+    '而且报的归属是错的:它把 step_one 说成 step 的变体');
+
+  assert.deepEqual(analyze({ ...args, engine: 'compile' }).errors, [],
+    'ICU 下它是两条独立的 key,各自对齐,一条都不该报');
+  assert.deepEqual(analyze({ ...args, engine: 'paraglide' }).errors, []);
 });
 
 test('collectUsedKeys:t() 字面量、数据表 key 字面量、{{}} 模板占位;不认非命名空间前缀', () => {
