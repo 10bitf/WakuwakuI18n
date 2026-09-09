@@ -32,7 +32,7 @@
 
 | 方案 | 代表 | 满足硬需求 | 体积 | 不用它的**具体**理由 |
 |---|---|---|---|---|
-| **A 运行时解析 ICU** | FormatJS / react-intl · `i18next-icu` | 🔴 **不满足** | polyfill **1.7 MB** | **依赖 `Intl.PluralRules`，而安卓微信基础库没有 `Intl`** —— Racing 的 `core/tz.js` 早有 plat-limit 记着这条（`dayjs-tz`/`luxon`/`date-fns-tz` 全因此不能用）。polyfill 装不下：Racing 主包只剩约 450 KB 余量 |
+| **A 运行时解析 ICU** | FormatJS / react-intl · `i18next-icu` | 🔴 **不满足** | polyfill **1.7 MB** | **依赖 `Intl.PluralRules`，而安卓微信基础库没有 `Intl`** —— Racing 的 `core/tz.js` 早有 plat-limit 记着这条（`dayjs-tz`/`luxon`/`date-fns-tz` 全因此不能用）。⚠️ **本行原写「polyfill 1.7 MB 装不下」，2026-09-09 改判**：1.7 MB 是**整个 `Intl`** 的 polyfill；只补 `Intl.PluralRules` 是 **9 语种 minify 67 KB / gzip 15 KB**（§12 实测），Racing 主包 450 KB 余量装得下。所以本行不再是「装不下」，而是「要多背一个 polyfill 且要保证它先于任何取词执行」 |
 | **B 构建期编译** | **Lingui**（React 圈「性能党首选」）· `@messageformat/core` | ✅ 全满足 | 🎉 **净 −33 KB** | ✅ **选它**（理由见 §3；体积是 2026-09-09 spike 打包实测，**比预估的 +7 KB 好得多** —— 因为 i18next 整个退出了）|
 | C 各家自有复数 | i18next 的 `_one`/`_other` | ◐ 现状 | 0 | 就是问题 1/2/3 本身 |
 
@@ -271,3 +271,38 @@ README 第一句写着框架的自我定位：
 
 漏传占位符的痕迹：`{round}` → `undefined`。两种都「一眼可见」，
 原契约延续、只是形状换了。开发期哨兵两种都认。
+
+---
+
+## 12. Paraglide 复验（2026-09-09，用户倾向它，因为自维护成本高）
+
+**问的是一件事**：把取词层整个交出去（我们只留 `lint-raw` + `check`），代价是多少。
+`@inlang/paraglide-js` **2.25.1**，spike 在会话 scratchpad 的 `pg/` 与 `pg2/`。
+
+### 12.1 判读表与读数
+
+| # | 问题 | 读数（都是命令跑出来的） | 判读 |
+|---|---|---|---|
+| ① | 复数碰不碰 `Intl` | 产物 `registry.plural()` 里是 `new Intl.PluralRules(locale, o).select(…)`；删掉 `globalThis.Intl` 后调用 → `ReferenceError: Intl is not defined`；恢复 `Intl` 同一条 ✅ | 🔴 **碰，而且是运行时碰** |
+| ①附 | 中文包会不会被连累 | **`cats zh` 一样崩** —— 中文那条根本没变体，编出来仍是 `const countPlural = registry.plural("zh", …)` 然后把结果扔掉 | 🔴 **只要某条 key 在任一语种里声明了复数，纯中文包也崩** |
+| ①救 | 只补 `PluralRules` 的 polyfill 多大 | `@formatjs/intl-pluralrules` + 9 个语种数据，esbuild bundle+minify **67 KB**（gzip 15 KB） | ✅ 装得下 —— §2 那句「1.7 MB」是整个 `Intl`，已改判 |
+| ② | 一条消息多个复数 | `two({races:1,drivers:20})` → `1 race, 20 drivers` | ✅ 支持（i18next 做不到的那件事它能做）|
+| ③ | 序数 1st/2nd/3rd/**11th** | 四种声明写法：`plural(select: ordinal)`/`plural(type: ordinal)`/`plural(type: "ordinal")` 都**静默丢掉选项**（编出 `{}`，退化成基数 → `1st 2th 3th 11th`）；`plural(type=ordinal)` 把右括号吃进值里，编出 `{ type: "ordinal)" }` → 运行时 `RangeError: Value ordinal) out of range` | 🔴 **插件层有缺陷**。编译器本身有这能力（`compile-message.test.js` 里有 `{name:"type",value:{…"ordinal"}}`），是 messageFormat 插件的 JSON 声明语法没打通 |
+| ④ | 能不能直接吃我们现有的 `i18n/<locale>/<ns>.json` | `plugin-i18next` 能读，也认 `_one`/`_other` 后缀并转成变体。**但**：`{n}` 被当字面量原样输出（它要 i18next 的 `{{n}}`），且复数选择变量被写死成 `count`（`registry.plural("en", i?.count, {})`） | 🔴 **保住布局 = 把 i18next 那两个病一起保住** —— 魔法 `count` 与双花括号占位符，正是我们换引擎要甩掉的东西 |
+| ⑤ | 调用点能不能保住 `t('a.b.c')` | 导出名是字符串：`export { app_race_left as "app:race.left" }`，所以 `m["app:race.left"](vars)` 可行，能包一层 `t()` | ◐ **但动态索引会废掉 tree-shaking** —— 那是 Paraglide 的头号卖点。二选一 |
+
+**对照**：同一批消息喂我们自己的编译器 —— 产物零 `import`、零 `Intl`（`build:mp-weixin` 全包 `Intl.` 出现 0 次）。
+所以 ① 的崩不是「这种写法本来就不行」，是这条路自己的性质。
+
+### 12.2 结论
+
+Paraglide **不是死路，是有价签的活路**。价签四项：
+
+1. 多背一个 67 KB polyfill，且必须保证它在任何取词之前执行（漏了就是崩，不是少个字）。
+2. 序数在插件层是坏的 —— 海外版要 1st/2nd/3rd 得等上游修，或绕开它自己写。
+3. **想摆脱魔法 `count` 与 `{n}` 占位符，就必须放弃现有 JSON 布局**，改成 inlang 的 messageFormat 格式：动全部文案表 + 动约 700 处调用点。
+4. 想保住 700 处调用点就得用动态索引，那 tree-shaking 没了 —— 而 tree-shaking 是它最大的卖点之一。
+
+**「自维护成本高」这条要摆正**：我们并没有自己造引擎。`@messageformat/core`（ICU 标准的 JS 实现）是引擎，
+我们自己写的是 `compile.js` 53 行 + `make-t.js` 18 行 = **71 行胶水**。两条路都是「用别人的引擎」，
+差别在胶水写在我们这边还是他们那边 —— 而写在他们那边的代价，是上面那四项。
