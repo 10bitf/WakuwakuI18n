@@ -1,6 +1,6 @@
 {
   "name": "wakuwaku-i18n",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Wakuwaku 项目共用的文案/多语言框架",
@@ -19,12 +19,18 @@
     "./scan": {
       "types": "./src/scan.d.ts",
       "default": "./src/scan.js"
-    }
+    },
+    "./compile": "./src/compile.js",
+    "./make-t": "./src/make-t.js"
   },
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "test": "node --test"
+  },
+  "dependencies": {
+    "@messageformat/core": "^3.4.0",
+    "@messageformat/runtime": "^3.0.2"
   }
 }

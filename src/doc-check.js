@@ -199,6 +199,112 @@ export function checkApiContractTable(markdown, pkg, repoRoot, docFile) {
   return problems;
 }
 
+// ---------- 检查 2b:API 契约表的**反方向** ----------
+// 检查 2 查的是「表→代码」:表里写的导出必须真的存在。它查不出的正是相反那一半——
+// **代码里新加了对外导出,表里没写**。2026-09-09 加 `compile`/`make-t` 两个子路径时
+// 用变异测试逮到:把 makeT 那一整行从表里删掉,139 条测试照样全绿。
+// 而 README 写着「那两张契约表不是摆设,机械校验」——只防一个方向的守卫,
+// 正是本仓修过好几次的病(见 ~/.claude memory「读数太整齐先怀疑量具」)。
+//
+// 判据:`package.json` 的 `exports` 里每个子路径所指的源文件,其每一个具名 `export`
+// 都必须在表里有一行,且「从哪导入」列指向该子路径。
+//
+// **没有豁免口子**:从对外子路径 export 出去的名字就是对外 API,不想被人用就别 export
+// (放进不在 exports 里的模块,或改成模块内私有)。补一行表的成本是一行字,
+// 而"内部用的,别当真"这种口子一开,这道闸就退回成提醒。
+export function checkApiExportsDocumented(markdown, pkg, repoRoot, docFile) {
+  const tables = parseMarkdownTables(markdown);
+  const table = findTable(tables, '导出');
+  if (!table) return missingTableProblem('API 契约(反向)', docFile);
+
+  // 表里已登记的 (导出名, 从哪导入) 对
+  const documented = new Set();
+  for (const row of table.rows) {
+    const name = extractBacktick(row.cells[0]);
+    const from = extractBacktick(row.cells[1]);
+    if (name && from) documented.add(`${from}::${name}`);
+  }
+
+  const problems = [];
+  const pkgName = pkg.name;
+  for (const [key, entry] of Object.entries(pkg.exports || {})) {
+    const importFrom = key === '.' ? pkgName : pkgName + key.slice(1);
+    const target = typeof entry === 'string' ? entry : (entry && (entry.default || entry.import || entry.require));
+    if (!target) {
+      problems.push({
+        file: docFile, line: null, table: 'API 契约(反向)', row: importFrom,
+        message: `package.json 的 exports["${key}"] 没有 default(或 import/require),不知道指向哪个源文件`,
+        expected: '有 default 字段', actual: JSON.stringify(entry),
+      });
+      continue;
+    }
+    const abs = path.join(repoRoot, target);
+    if (!fs.existsSync(abs)) {
+      problems.push({
+        file: docFile, line: null, table: 'API 契约(反向)', row: importFrom,
+        message: `exports["${key}"] 指向的文件不存在: ${target}`,
+        expected: `${target} 存在`, actual: '文件不存在',
+      });
+      continue;
+    }
+    for (const name of namedExportsOf(fs.readFileSync(abs, 'utf8'))) {
+      if (!documented.has(`${importFrom}::${name}`)) {
+        problems.push({
+          file: docFile, line: null, table: 'API 契约(反向)', row: name,
+          message: `${target} 导出了「${name}」,但 API 契约表里没有它(从 ${importFrom} 导入)那一行`,
+          expected: `表里有一行 \`${name}\` | \`${importFrom}\``, actual: '表里没有',
+        });
+      }
+    }
+  }
+  return problems;
+}
+
+// 源码里的具名导出。两种写法都认:`export function f`/`export const c` 与 `export { a, b as c }`。
+// `export default` 不算——它没有名字,表的第一列填不出来。
+//
+// ⚠️ 先剥注释再匹配。本仓的模块头注释里就有示范产物代码(compile.js 的 `export default {…}`),
+// 不剥的话守卫会指着一段注释说"你没登记"——**误报会让人习惯性无视这道闸,那它就废了**
+// (本文件开头的设计取舍)。
+export function namedExportsOf(src) {
+  const code = stripComments(src);
+  const names = [];
+  const declRe = /export\s+(?:async\s+function\*?|function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
+  let m;
+  while ((m = declRe.exec(code))) names.push(m[1]);
+  const listRe = /export\s*\{([^}]*)\}(?!\s*from)/g;
+  while ((m = listRe.exec(code))) {
+    for (const part of m[1].split(',')) {
+      const t = part.trim();
+      if (!t) continue;
+      const as = /\bas\s+([A-Za-z_$][\w$]*)\s*$/.exec(t);
+      const name = as ? as[1] : t;
+      if (name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name)) names.push(name);
+    }
+  }
+  return [...new Set(names)];
+}
+
+// 剥掉 // 与 /* */ 注释,同时避开字符串/模板串里的 // (如 'https://…')。
+// 够用即可:它只服务上面那一个匹配,漏剥的后果是多报一条,不是漏报。
+function stripComments(src) {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue }
+    if (c === '/' && src[i + 1] === '*') { i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue }
+    if (c === '"' || c === "'" || c === '`') {
+      const q = c; out += c; i++;
+      while (i < n && src[i] !== q) { if (src[i] === '\\') { out += src[i]; i++ } out += src[i]; i++ }
+      out += src[i] || ''; i++; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 // ---------- 检查 3:CLI 表 ----------
 // 逐行:表里列的 CLI 文件必须存在。
 export function checkCliTable(markdown, repoRoot, docFile) {
@@ -294,6 +400,7 @@ export function runDocCheck(repoRoot) {
   const problems = [
     ...checkConfigContractTable(usageMd, repoRoot, 'docs/USAGE.md'),
     ...checkApiContractTable(usageMd, pkg, repoRoot, 'docs/USAGE.md'),
+    ...checkApiExportsDocumented(usageMd, pkg, repoRoot, 'docs/USAGE.md'),
     ...checkCliTable(usageMd, repoRoot, 'docs/USAGE.md'),
     ...checkDocPathReferences(usageMd, repoRoot, 'docs/USAGE.md'),
     ...checkDocPathReferences(readmeMd, repoRoot, 'README.md'),

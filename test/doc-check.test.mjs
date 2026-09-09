@@ -8,6 +8,7 @@ import {
   runDocCheck, formatProblem, parseMarkdownTables, extractBacktick,
   checkConfigContractTable, checkApiContractTable, checkCliTable,
   checkDocPathReferences, extractDocPathRefs,
+  checkApiExportsDocumented, namedExportsOf,
 } from '../src/doc-check.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -113,6 +114,71 @@ test('API 契约表:导入子路径须在 exports 里,导出名须真的被 expo
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ---------- 检查 2b:API 契约表的反方向 ----------
+// 检查 2 只查「表→代码」。2026-09-09 变异测试逮到:把 makeT 那一整行从表里删掉,
+// 139 条测试全绿——**新加的对外导出没人管**。下面三条守的是这一半。
+test('API 契约表反向:代码里的对外导出没登记进表就红', () => {
+  const root = fixture({
+    'src/core.js': "export function makeT() {}\nexport const FALLBACK_LOCALE = 'zh';\n",
+    'src/extra.js': "export function helper() {}\n",
+  });
+  const pkg = { name: 'demo-pkg', exports: { '.': { default: './src/core.js' }, './extra': './src/extra.js' } };
+  const md = [
+    '| 导出 | 从哪导入 | 签名 | 用途 |',
+    '|---|---|---|---|',
+    '| `makeT` | `demo-pkg` | `makeT()` | 登记了 |',
+    '| `FALLBACK_LOCALE` | `demo-pkg` | `\'zh\'` | 登记了 |',
+  ].join('\n');
+  try {
+    const problems = checkApiExportsDocumented(md, pkg, root, 'docs/USAGE.md');
+    assert.equal(problems.length, 1, 'extra.js 的 helper 没登记,应当且只应当报这一条');
+    assert.equal(problems[0].row, 'helper');
+    assert.match(problems[0].message, /demo-pkg\/extra/, '要说清该从哪个子路径导入');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('API 契约表反向:登记了但写错子路径,等于没登记', () => {
+  // 「名字在表里出现过」不够——从 demo-pkg 导入不到 demo-pkg/extra 的东西。
+  const root = fixture({
+    'src/core.js': "export function makeT() {}\n",
+    'src/extra.js': "export function helper() {}\n",
+  });
+  const pkg = { name: 'demo-pkg', exports: { '.': './src/core.js', './extra': './src/extra.js' } };
+  const md = [
+    '| 导出 | 从哪导入 | 签名 | 用途 |',
+    '|---|---|---|---|',
+    '| `makeT` | `demo-pkg` | `makeT()` | 对的 |',
+    '| `helper` | `demo-pkg` | `helper()` | 子路径写错了,实际在 demo-pkg/extra |',
+  ].join('\n');
+  try {
+    const problems = checkApiExportsDocumented(md, pkg, root, 'docs/USAGE.md');
+    assert.equal(problems.length, 1);
+    assert.equal(problems[0].row, 'helper');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('namedExportsOf:注释里的示范代码不算导出 —— 误报会让人把这道闸当噪声', () => {
+  // compile.js 的模块头注释里就有一段示范产物(`export default { … }`),
+  // 还有解释性的「export function」字样。不剥注释的话守卫会指着注释说你没登记。
+  const src = [
+    '// 产物形如:export function ghostA() {}',
+    '/* 多行注释里也有:',
+    ' * export const ghostB = 1;',
+    ' */',
+    "const url = 'https://x.dev'; // 字符串里的 // 不许把后面的代码吃掉",
+    'export function real() {}',
+    'export const REAL_C = 1;',
+    'function inner() {}',
+    'export { inner as renamed };',
+    'export default real;',
+  ].join('\n');
+  assert.deepEqual(namedExportsOf(src), ['real', 'REAL_C', 'renamed']);
 });
 
 // ---------- 检查 3:CLI 表 ----------

@@ -1,7 +1,7 @@
 # wakuwaku-i18n
 
 > 完整使用说明(接入步骤、配置与 API 契约表、硬卡判据、踩坑记录)见 [docs/USAGE.md](docs/USAGE.md);本 README 只做入口与速查。
-> 那两张契约表不是摆设——`tools/doc-check.mjs` 挂在 `npm test` 上机械校验它们与代码是否一致,改代码不同步改表会让 `npm test` 变红。
+> 那两张契约表不是摆设——`tools/doc-check.mjs` 挂在 `npm test` 上机械校验它们与代码是否一致,**表→代码与代码→表两个方向都查**,改代码不同步改表会让 `npm test` 变红。
 
 Wakuwaku 项目共用的**文案管控工具**——它**不提供取词**,取词交给 i18next(见 USAGE 两条路径)。
 它管的是另外四件事:**禁止源码里写裸中文**(`lint-raw`,开源界没有替代品;

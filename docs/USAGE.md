@@ -449,20 +449,25 @@ public/kws/zh/        声学模型(放 public 才能被浏览器取到;path 不�
 
 ## 5. API 契约
 
-对外导出即 `package.json` `exports` 里的四个子路径。全部导出:
+对外导出即 `package.json` `exports` 里的六个子路径。全部导出:
 
 | 导出 | 从哪导入 | 签名 | 用途 |
 |---|---|---|---|
 | `PRESET` | `wakuwaku-i18n/i18next-preset` | 冻结的配置对象 | 三端必须一致的 i18next 解析规则:`nsSeparator:false`、`keySeparator:'.'`、`interpolation` 的单花括号。**不是取词逻辑,是配置常量** |
 | `withPreset` | `wakuwaku-i18n/i18next-preset` | `withPreset(options?) → object` | 把 PRESET 与消费方选项合并后交给 `i18next.init()`。**对 `interpolation` 做合并而非替换** —— 直接展开 PRESET 会丢掉 prefix/suffix,而症状是「占位符不报错、只是原样不替换」 |
 | `loadTables` | `wakuwaku-i18n/load` | `loadTables(i18nDir) → { [locale]: { [key]: string } }` | 读 `i18n/<语言>/<ns>.json` 展平成表,命名空间取文件名。值不是字符串就地抛错。Node-only |
+| `flatten` | `wakuwaku-i18n/load` | `flatten(obj, prefix?, out?) -> { [key]: string }` | 嵌套对象展平成点分 key,`_` 开头的键(如 `_note`)当说明跳过。`loadTables` 内部用它;自己读 JSON 的宿主可以直接用。**与 `flattenTable` 的区别**:这个跳 `_` 前缀并 `String()` 强转,那个不跳不转(编译器要的是原样) |
 | `scanFiles` | `wakuwaku-i18n/scan` | `scanFiles({ root, dirs, exts, exempt? }) → { hits, fileExempt, lineExempt }` | 裸中文遍历 + 豁免过滤。lint-raw CLI 与消费方自建刹车点共用这一份实现(范例:Photoman `miniapp/test/i18n-exempt-count.test.mjs`)。Node-only |
+| `compileTable` | `wakuwaku-i18n/compile` | `compileTable(flatTable, locale, opts?) → string` | 把**扁平**表编译成 ES 模块源码（`export default { key: fn }`）。编不过一次报全。🔴 默认拦 `#`（它编成 `number()`，内部是 `Intl.NumberFormat`，而安卓微信没有 `Intl`）——纯 web 环境用 `{ allowIntl: true }` 放行。Node-only |
+| `compileTables` | `wakuwaku-i18n/compile` | `compileTables(nestedTables, locale, opts?) → string` | 同上，喂几张**嵌套**表（`{ app: {...} }`），命名空间即键名，与 `loadTables` 口径一致。Node-only |
+| `flattenTable` | `wakuwaku-i18n/compile` | `flattenTable(node, prefix?, out?) → { [key]: string }` | 嵌套表展平成点分 key。`compileTables` 内部用它，导出是给宿主自建流程用 |
+| `makeT` | `wakuwaku-i18n/make-t` | `makeT(table, opts?) → (key, vars?) => string` | 取词纯逻辑：喂编译产物回 `t`。兜三件事——**`vars` 缺省给 `{}`**（编译函数拿 `undefined` 会抛，而不带参数的调用到处都是）、缺 key 回空串 + 告警、开发期「占位符没填上」哨兵。**与构建系统无关，所以能被 Node 直测** |
 | `fileExemptReason` | `wakuwaku-i18n/exempt` | `fileExemptReason(src, masked?) → string \| null` | 识别文件级豁免标记(最前三行、理由必填);传 `masked` 才做"标记在真注释里"的词法核验。Node-only |
 | `collectLineExemptions` | `wakuwaku-i18n/exempt` | `collectLineExemptions(src, masked?) → Map<行号, 理由>` | 收集行级豁免标记(与命中同行、理由必填)。Node-only |
 | `splitByLineExemption` | `wakuwaku-i18n/exempt` | `splitByLineExemption(src, hits, masked?) → { hits, exempt }` | 把命中按行级豁免分流;豁免的仍要被打印,不是静默丢弃。Node-only |
 
 `src/check.js`、`src/lint-raw.js`、`src/doc-check.js` **不在 exports 里**,属 CLI 的内部实现;消费方需要
-程序化能力时按包名 import 上面四个子路径,**不要拿相对路径伸进 node_modules 挖源码**——
+程序化能力时按包名 import 上面六个子路径,**不要拿相对路径伸进 node_modules 挖源码**——
 那会绕过 exports、依赖物理布局(README 有同款警告)。
 
 三个 CLI(不走 import,直接 node 执行):
@@ -598,15 +603,19 @@ const KNOWS = ['app.scout.wait.k1'];  t(k + '.t')  // 采到 'app.scout.wait.k1'
 
 改了下面任何一处,**同一个提交里**同步改文档对应小节:
 
-- 新增/改名/删除任何 CLI 或对外导出(`package.json` 的 `exports`、四个导出模块、`tools/`)→ 改第 5 节 API 契约表;
+- 新增/改名/删除任何 CLI 或对外导出(`package.json` 的 `exports`、六个导出模块、`tools/`)→ 改第 5 节 API 契约表;
+  **忘了改会被逮住**:doc-check 两个方向都查,从对外子路径 export 出去而表里没写的名字直接红(见下)。没有豁免口子——不想被人用就别从对外模块 export;
 - 新增/改名/删除/改语义任何 `i18n.config.mjs` 字段 → 改第 4 节配置契约表;
 - 改变 check 或 lint-raw 的任何判据、遮蔽规则、豁免语义 → 改第 6 节(README 的「豁免」「已知限制」如涉及也一起);
 - 新增消费方或消费方用的能力变了 → 改第 1 节的表;
 - 已知限制变动 → 第 8 节与 README「已知限制」两处一起改;
 - 接入步骤变了(脚本名、模板、钩子)→ 改第 2 节,并且**重新走一遍再写**,文档里跑不通的步骤是最严重的缺陷。
 
-`tools/doc-check.mjs` 会机械校验第 4/5 节契约表(含 CLI 表)与代码的一致性(字段/导出真实存在、
-「被谁读取」的文件真实存在且确实读了该字段、「从哪导入」与 exports 对得上),外加全文里形如
+`tools/doc-check.mjs` 会机械校验第 4/5 节契约表(含 CLI 表)与代码的一致性,**两个方向都查**:
+「表→代码」(表里写的字段/导出真实存在、「被谁读取」的文件真实存在且确实读了该字段、「从哪导入」与
+`exports` 对得上)与「代码→表」(`exports` 每个子路径的每一个具名导出,表里都得有对应那一行)。
+反方向是 2026-09-09 补的:此前删掉一整行契约表,`npm test` 照样全绿——**只防一个方向的守卫,
+看着有防线,新加的导出它一声不吭**。外加全文里形如
 `src/…`、`tools/…`、`templates/…`、`test/…` 的路径引用是否指向真实存在的文件。这道校验挂在
 `test/doc-check.test.mjs` 里,`npm test` 天然覆盖,不用单独记得跑。**它红了就是文档过期了,
 改文档,不要绕过检查。**(手工单独跑:`node tools/doc-check.mjs`。)
