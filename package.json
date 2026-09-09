@@ -29,7 +29,19 @@
   "scripts": {
     "test": "node --test"
   },
-  "dependencies": {
+  "peerDependencies": {
+    "@messageformat/core": "^3.4.0",
+    "@messageformat/runtime": "^3.0.2"
+  },
+  "peerDependenciesMeta": {
+    "@messageformat/core": {
+      "optional": true
+    },
+    "@messageformat/runtime": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
     "@messageformat/core": "^3.4.0",
     "@messageformat/runtime": "^3.0.2"
   }

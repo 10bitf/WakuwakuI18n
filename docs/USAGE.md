@@ -450,6 +450,23 @@ public/kws/zh/        声学模型(放 public 才能被浏览器取到;path 不�
 
 ## 5. API 契约
 
+### 5.0 核心与可选零件
+
+**本框架的身份是「文案的校验层」,不是取词层。**
+
+| | 谁用 | 跑在哪 | 依赖 |
+|---|---|---|---|
+| **核心** —— `check` · `lint-raw` · `scan` · `exempt` · `load` | 所有项目 | 构建期(Node) | **零外部依赖**,app 包里 0 字节 |
+| **可选** —— `/compile` + `/make-t` | 目标环境**没有 `Intl`** 的(微信小程序) | 编译在构建期,`makeT` 18 行在运行期 | 要自己装 `@messageformat/core` + `/runtime` |
+| **可选** —— `/i18next-preset` | 还留在 i18next 上的 | 运行期 | i18next |
+
+⚠️ **可选零件的依赖是 `optional peerDependencies`,不是 `dependencies`。**
+用 `/compile` 的项目要在自己的 `package.json` 里加那两个包;不用的项目**一个字节都不下载**
+(合计 725 KB)。2026-09-09 之前它们躺在 `dependencies` 里,于是根本不用编译器的项目也在下载 ——
+名义上的可选、实际上的强制。`test/package-shape.test.mjs` 盯着它别漂回去。
+
+### 5.1 全部导出
+
 对外导出即 `package.json` `exports` 里的六个子路径。全部导出:
 
 | 导出 | 从哪导入 | 签名 | 用途 |

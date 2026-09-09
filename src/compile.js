@@ -2,6 +2,24 @@
 //
 // 设计与实测在 docs/specs/2026-09-09-icu-compile-design.md。这里只讲要点：
 //
+// # 📦 这是**可选零件**，用它要自己装两个依赖
+//
+// 本框架的身份是**文案的校验层**（`check` / `lint-raw`），取词引擎是可选的。
+// 所以 `@messageformat/core` 与 `@messageformat/runtime` 声明成了**可选 peer 依赖** ——
+// 不走这条路的项目（还在 i18next 上的、或者用 Paraglide 的）一个字节都不下载它们（合计 725 KB）。
+//
+// 用这条路的项目在自己的 `package.json` 里加：
+//
+//     "@messageformat/core": "^3.4.0",      // 构建期，编译用
+//     "@messageformat/runtime": "^3.0.2"    // 运行期，产物里的 plural() 从这儿来
+//
+// 忘了装的表现是 import 本模块时 `ERR_MODULE_NOT_FOUND: Cannot find package '@messageformat/core'`。
+//
+// # 什么时候该选它：**目标环境没有 `Intl`**
+//
+// 微信小程序（安卓端）是已知的一个。编译产物把复数规则编进函数体，
+// 对「有没有 `Intl`」这个问题**免疫** —— 而运行时方案（含 Paraglide）的答案完全取决于它。
+//
 // # 为什么是编译不是运行时
 //
 // 消费方里有小程序，而**安卓微信基础库没有 `Intl`**（Racing 的 `core/tz.js` 有
