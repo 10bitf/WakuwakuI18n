@@ -1,6 +1,6 @@
 {
   "name": "wakuwaku-i18n",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Wakuwaku 项目共用的文案/多语言框架",
