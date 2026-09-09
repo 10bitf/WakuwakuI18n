@@ -8,7 +8,13 @@ Wakuwaku 项目共用的**文案管控工具**——它**不提供取词**,取�
 注意它守的是**源语言**,见 USAGE 第 6 节的⚠️块)、
 **语言包的完整性**(`check`:用了没定义的 key / 跨语言缺失 / 占位符不一致 /
 `assets` 声明的非文本交付物有没有兑现)、
-**读文案表**(`load`)、**三端 i18next 解析规则统一**(`i18next-preset`)。
+**读文案表**(`load`)、**三端 i18next 解析规则统一**(`i18next-preset` ⚠️ **将退役**)。
+
+> 🔴 **取词层正在迁去 Paraglide**（2026-09-09 定，设计见 [docs/specs/2026-09-09-paraglide-migration-design.md](docs/specs/2026-09-09-paraglide-migration-design.md)）。
+> `i18next-preset` / `compile` / `make-t` 三个入口都是**过渡态**，**最后一个消费方迁完就删** ——
+> 这句话写在这里，是因为纯口头约定的「以后要删」五个月后没人记得。
+> 本框架迁完后收敛为它唯一无可替代的两件：**裸中文硬卡**（`lint-raw`）与**跨语种完整性**（`check`）。
+> 后者 Paraglide 明确不做 —— 某条 key 中文有、英文没有，它静默回退成中文，编译一声不吭。
 
 各项目以 **git URL** 依赖引用:`"wakuwaku-i18n": "github:10bitf/WakuwakuI18n"`。
 **绝不要用 `file:`** —— 那会让 npm 建符号链接,而 `npm install` 会沿着链接把本仓库清空
