@@ -43,6 +43,18 @@ test("format: 'flat' —— key 里已带前缀,不许再按文件名加一遍",
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("`_` 开头的文件不是文案表 —— `_notes.json` 不许进表", () => {
+  // 摊平工具把说明键挪去 `_notes.json`(plugin-icu1 不认 `_` 前缀的键约定,
+  // 留在表里译者会在 Fink 里看到一条叫 `_note` 的待翻译串)。那个文件不能再被当成表读回来。
+  // 2026-09-09 漏提交这一行,WakuwakuDark 的 check 里当场多出一条叫 `site` 的假文案。
+  const dir = fixture({
+    'zh/site.json': { 'site.brand': '哇酷' },
+    'zh/_notes.json': { site: { 'site._note': '这是说明,不是文案' } },
+  });
+  assert.deepEqual(loadTables(dir, { format: 'flat' }).zh, { 'site.brand': '哇酷' });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('值非字符串即抛错,并指明文件与 key', () => {
   const bad = fixture({ 'zh/site.json': { hero: { count: 3 } } });
   assert.throws(() => loadTables(bad), /zh[/\\]site\.json.*site\.hero\.count/);

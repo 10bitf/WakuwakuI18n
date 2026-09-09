@@ -59,7 +59,10 @@ export function loadTables(i18nDir, opts = {}) {
   const tables = {};
   for (const loc of locales) {
     const table = {};
-    const files = fs.readdirSync(path.join(i18nDir, loc)).filter((f) => f.endsWith('.json')).sort();
+    // `_` 开头的文件不是文案表（`_notes.json` 是给人看的说明档）。
+    // 与 `_` 开头的**键**同一条约定，只是提到了文件这一级 —— 因为 plugin-icu1 不认键那一级的约定。
+    const files = fs.readdirSync(path.join(i18nDir, loc))
+      .filter((f) => f.endsWith('.json') && !f.startsWith('_')).sort();
     for (const f of files) {
       const ns = f.slice(0, -'.json'.length);
       const obj = JSON.parse(fs.readFileSync(path.join(i18nDir, loc, f), 'utf8'));
