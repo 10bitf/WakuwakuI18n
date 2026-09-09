@@ -97,8 +97,8 @@ spike 在会话 scratchpad 的 `pg/`（messageFormat 插件）、`pg3/`、`pg4/`
 | ⑤ | 中文表写了 plural 语法、又没有 `Intl` | `ReferenceError: Intl is not defined`；恢复 `Intl` 后同一条 ✅（有对照） | 🔴 崩 |
 | ⑥ | 中文表**不写** plural 语法、只编 `zh` | 产物里 `import registry` 整个消失；无 `Intl` 环境全跑通 | ✅ **这就是小程序那条路**（§8） |
 | ⑦ | `PluralRules`-only polyfill 多大 | 9 语种 esbuild bundle+minify **67 KB**（gzip 15 KB） | 备用方案，装得下 |
-| ⑧ | 文案表布局 | `pathPattern` 只吃**字符串**；给对象（多命名空间）→ `TypeError: o.replace is not a function`。嵌套 JSON → 编出 0 条 | 🔴 **必须扁平、单文件/语种** |
-| ⑨ | 导出名 | `export { app_nav_data as "app.nav.data" }` —— 两种形态都在 | ✅ 点分 key 原样保留，codemod 好写 |
+| ⑧ | 文案表布局 | `pathPattern` 给对象 → `TypeError: o.replace is not a function`；嵌套 JSON → 编出 0 条。**但给数组可以**（glob 不行）| ◐ **必须扁平，但目录与多命名空间都能留**（改判见 §14.1）|
+| ⑨ | 导出名 | `export { app_nav_data as "app.nav.data" }` —— **只有字符串名这一种**，标识符 `app_nav_data` 并没有被导出 | ◐ 调用形态只能是 `m['a.b.c']()`（改判见 §14.2）|
 | ⑩ | **缺语种** | `zh` 有、`en` 没有 → 编出 `const en_app_only_zh = zh_app_only_zh;`，**编译一声不吭** | 🔴 **静默回退**，正是用户最担心的洞 |
 | ⑪ | runtime 依赖什么浏览器 API | `document`/`window`/`localStorage`/`location` 共 61 处引用，但全被守卫住：这些全局不存在时 `getLocale()` / 取词 / `setLocale` 都正常 | ✅ 小程序有戏（真机仍要验，见 §11） |
 
@@ -317,3 +317,84 @@ Racing 从「已完成」变成「最难的那个」，所以先拿 WakuwakuDark
 | codemod 改错 | 中 | 逐项目跑 + 各仓已有的 gates + `check` 的跨语种完整性一起兜。**不手改，手改 121 个文件必漏** |
 
 ⚠️ **`compile` / `make-t` 到步 5 才删**，就是为了在前四步里留一条随时能掉头的路。
+
+---
+
+## 14. 打样结果（2026-09-09，WakuwakuDark，`b254276`）
+
+**验收：`dist/` 与迁移前逐字节零差异**（两门语言两个 HTML）。静态站能拿到的最硬的读数 ——
+它同时证明了「文案没被改动」「取词结果没变」「构建没退化」三件事。
+另：i18n check 14 条 0 提示、lint-raw 无裸中文、单测 5 绿。
+
+打样是为了在 4 处调用点上把坑踩完再去动 354 处的。踩到五个，其中两个推翻了本文原来的写法。
+
+### 14.1 🔴 改判：目录与多命名空间**不用**动（原 §6 说要合并成单文件）
+
+`pathPattern` 不吃对象，但**吃数组**：
+
+```jsonc
+"pathPattern": ["./i18n/{locale}/app.json", "./i18n/{locale}/common.json"]
+```
+
+所以 §6 里「摊平并合并成一个文件」是错的，正确的是：**目录、文件、命名空间全都留着，
+只把每个文件内部从嵌套改成扁平、并把命名空间前缀写进 key。**
+对 Racing / Photoman / Dirty 这三个多命名空间的项目，这省掉一整轮结构改动。
+
+代价：每加一个 ns 要在 `settings.json` 里补一行（glob 不支持）。显式，可接受。
+
+### 14.2 🔴 改判：调用形态是 `m['a.b.c']()`，不是 `m.a_b_c()`（原 §7 反了）
+
+key 里带点号时，Paraglide **只**生成字符串名导出：
+
+```js
+export { site_brand as "site.brand" }   // ← m.site_brand 是 undefined
+```
+
+（key 本身是合法 JS 标识符时才有普通具名导出。我们的 key 全带点号，所以没有。）
+
+这其实更好：
+
+- **key 字符串原样保留**，codemod 从 `t('a.b.c', v)` 到 `m['a.b.c'](v, opt)` 几乎是纯替换
+- 字符串字面量索引**照样有类型检查与补全**，类型安全没丢
+- 顺带躲开一个坑：标识符名是 Paraglide 自己造的，`site.metaDescription` → `site_metadescription1`，
+  那个数字不可预测（实测 `anewkey2` / `anotherone1` / `metadescription1`）。
+  好消息是它对「新增 key」稳定（加两条新 key 后老名字没变），但既然用不上就不用管了。
+
+⚠️ **tree-shaking 待验**：字面量索引（`m['site.brand']`）能不能被摇掉，我没量。
+本仓是 Astro 构建期取词、产物里只有成品 HTML，**这个问题在这里不成立**。
+它对**把文案发到客户端**的项目才要紧 —— Dirty 的 `i18n.client.ts`、Racing 与 Photoman 的小程序。
+**动那三个之前必须先量这一条**（§11 步 2 的验收项）。
+
+### 14.3 说明键要挪出文案表
+
+`_note` 这种给人看的说明键，plugin-icu1 不认这条约定，会把它当成一条真文案编进产物 ——
+**于是译者会在 Fink 里看到一条叫 `_note` 的待翻译串**，正好毁掉我们迁过来要买的东西。
+`tools/flatten-tables.mjs` 把它们挪去同目录的 `_notes.json`（`_` 开头的文件两边都不读）。
+
+### 14.4 `check` 有两处漏检，迁移把它们照出来了（已修，v0.7.0）
+
+| 漏检 | 后果 |
+|---|---|
+| 不认 `m['a.b.c']` 这种取词 | 迁完的项目里**每条 key 都被报成「定义了但没人用」** —— 一道全是噪声的闸等于没有闸 |
+| key 里的连字符不在字符类里 | `site.project.trash-talk.name` **从来没**被算作「在用」。与迁移无关，一直存在 |
+
+### 14.5 动态 key：展开成显式映射表，比 `m[变量]` 好
+
+本仓 9 处调用里有 5 处是 `t(\`site.tag.${tag}\`)`。改成 `i18n.build.ts` 里的
+`Record<Tag, Msg>` 映射表，多写几行换到两件事：
+
+1. **`Record<Tag, …>` 让「加了 tag 忘了翻译」变成编译错误** —— 而 i18next 与 Paraglide
+   在这里都是静默回退
+2. tree-shaking 不被变量索引废掉（对客户端项目才要紧，见 14.2）
+
+全仓 1114 处里动态 key 只有 7 处（0.6%），所以这条不会变成迁移的主要成本。
+
+### 14.6 迁一个项目的实际步骤（给后面四个用）
+
+1. `node node_modules/wakuwaku-i18n/tools/flatten-tables.mjs` 看一眼 → `--write`
+2. `i18n.config.mjs` 加 `tableFormat: 'flat'`
+3. `project.inlang/settings.json`（modules 用 plugin-icu1；pathPattern 用数组列出各 ns）
+4. 构建接线：Vite 系挂 `paraglideVitePlugin`；非 Vite 的（Photoman 官网）走 CLI compile
+5. 调用点 codemod（**从产物的 `as "..."` 读映射，别自己算**）；动态 key 展开成映射表
+6. 卸 `i18next`；框架 pin 到 ≥ v0.7.0
+7. 验：**构建产物与迁移前比** + check + lint-raw + 单测
