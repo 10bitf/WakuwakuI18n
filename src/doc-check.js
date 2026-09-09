@@ -8,6 +8,7 @@
 // 像框架路径"的行做了结构化排除,细节见 checkDocPathReferences 上方注释。
 import fs from 'node:fs';
 import path from 'node:path';
+import { maskNonProse } from './lint-raw.js';
 
 export const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -247,7 +248,8 @@ export function checkApiExportsDocumented(markdown, pkg, repoRoot, docFile) {
       });
       continue;
     }
-    for (const name of namedExportsOf(fs.readFileSync(abs, 'utf8'))) {
+    // 给 abs 才跟得进 `export * from` —— 转出去的名字一样是对外 API
+    for (const name of namedExportsOf(fs.readFileSync(abs, 'utf8'), abs)) {
       if (!documented.has(`${importFrom}::${name}`)) {
         problems.push({
           file: docFile, line: null, table: 'API 契约(反向)', row: name,
@@ -260,19 +262,51 @@ export function checkApiExportsDocumented(markdown, pkg, repoRoot, docFile) {
   return problems;
 }
 
-// 源码里的具名导出。两种写法都认:`export function f`/`export const c` 与 `export { a, b as c }`。
-// `export default` 不算——它没有名字,表的第一列填不出来。
-//
-// ⚠️ 先剥注释再匹配。本仓的模块头注释里就有示范产物代码(compile.js 的 `export default {…}`),
-// 不剥的话守卫会指着一段注释说"你没登记"——**误报会让人习惯性无视这道闸,那它就废了**
-// (本文件开头的设计取舍)。
-export function namedExportsOf(src) {
-  const code = stripComments(src);
+/**
+ * 源码里的**具名导出**。`export default` 不算 —— 它没有名字，契约表的第一列填不出来。
+ *
+ * 认这五种写法（少认一种就是一个能悄悄溜进对外 API 的口子）：
+ *
+ * | 写法 | 说明 |
+ * |---|---|
+ * | `export function f` / `export class C` | 含 `async` / generator 变体 |
+ * | `export const a = 1, b = 2` | **多声明符要全认**，只认第一个是原来的漏洞 |
+ * | `export let x, y` | 同上 |
+ * | `export { a, b as c }` | 重命名取 `as` 后面那个 |
+ * | `export { helper } from './x.js'` · `export * from './x.js'` | **re-export 出去的名字就是对外 API**，要跟进那个文件 |
+ *
+ * ⚠️ **注释与字符串要先遮掉再匹配。** 本仓的模块头注释里就有示范产物代码
+ * （`compile.js` 的 `export default {…}`），不遮的话守卫会指着一段注释说「你没登记」——
+ * **误报会让人习惯性无视这道闸，那它就废了**（本文件开头的设计取舍）。
+ *
+ * 遮蔽直接复用 `lint-raw.js` 的 `maskNonProse` —— 那份被十几条对抗测试锤过
+ * （正则字面量里的 `\/*` 不被当块注释起点、正则里的引号不让字符串跟踪失同步、
+ * 未闭合块注释不吞到文件尾）。本文件原来手抄了一份弱化版，那三条**两个方向都能被骗**：
+ * 漏检（吞掉真导出）与误报（把注释里的示范当真导出）各有实例。
+ *
+ * @param {string} src 源码
+ * @param {string} [file] 源码的绝对路径。**只有给了它才能跟进 `export * from`** ——
+ *   不给的话遇到 re-export 会抛错而不是静默返回空集（静默是这道闸最贵的失效方式）。
+ */
+export function namedExportsOf(src, file, seen = new Set()) {
+  const code = maskNonProse(String(src), '.js');
   const names = [];
-  const declRe = /export\s+(?:async\s+function\*?|function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)/g;
   let m;
-  while ((m = declRe.exec(code))) names.push(m[1]);
-  const listRe = /export\s*\{([^}]*)\}(?!\s*from)/g;
+
+  // ① 声明式。多声明符全认:`export const a = 1, b = 2` 里的 b 原来是丢的。
+  const declRe = /export\s+(?:async\s+function\*?|function\*?|class)\s+([A-Za-z_$][\w$]*)|export\s+(?:const|let|var)\s+([^;\n]+)/g;
+  while ((m = declRe.exec(code))) {
+    if (m[1]) { names.push(m[1]); continue }
+    // 声明符列表:按顶层逗号切，取每段 `=` 之前的标识符。
+    // 解构（`export const { a } = o`）取不出名字，那种写法本仓没有，遇到就跳过而不是猜。
+    for (const seg of splitTopLevel(m[2])) {
+      const id = /^\s*([A-Za-z_$][\w$]*)/.exec(seg);
+      if (id) names.push(id[1]);
+    }
+  }
+
+  // ② 列表式，含 re-export。**不排除 `from`** —— 转出去的名字一样是对外 API。
+  const listRe = /export\s*\{([^}]*)\}(\s*from\s*['"]([^'"]+)['"])?/g;
   while ((m = listRe.exec(code))) {
     for (const part of m[1].split(',')) {
       const t = part.trim();
@@ -282,26 +316,51 @@ export function namedExportsOf(src) {
       if (name !== 'default' && /^[A-Za-z_$][\w$]*$/.test(name)) names.push(name);
     }
   }
+
+  // ③ 星号 re-export：要跟进目标文件，否则整批对外 API 一个都看不见。
+  //
+  // ⚠️ **在遮蔽后的源码上定位，到原始源码上取路径。** `maskNonProse` 会把 import 路径
+  // 一并遮掉（那是它给裸中文检查用的特性：路径不是文案），所以 `code` 里读不到 './x.js'。
+  // 它**逐字符等长替换**，偏移量不变，于是可以用 code 判位置、用 src 取内容 ——
+  // 既躲开注释里的假 re-export，又拿得到真路径。
+  const rawSrc = String(src);
+  // 遮蔽连引号一起吃掉，所以只匹配到 `from`，引号与路径都到原始源码里取
+  const starRe = /export\s*\*\s*from\b/g;
+  while ((m = starRe.exec(code))) {
+    const after = m.index + m[0].length;
+    const qm = /^\s*(['"])([^'"]*)\1/.exec(rawSrc.slice(after));
+    if (!qm) continue;
+    const spec = qm[2];
+    if (!file) {
+      throw new Error(`namedExportsOf 遇到 \`export * from '${spec}'\`，但没给 file，跟不进去。` +
+        '这道闸宁可抛错也不静默返回空集 —— 静默的结果是那批导出永远不用登记。');
+    }
+    const target = path.resolve(path.dirname(file), spec);
+    if (seen.has(target)) continue;      // 循环 re-export：跟过一次就够
+    seen.add(target);
+    if (!fs.existsSync(target)) {
+      throw new Error(`\`export * from '${spec}'\` 指向的文件不存在: ${target}`);
+    }
+    names.push(...namedExportsOf(fs.readFileSync(target, 'utf8'), target, seen));
+  }
+
   return [...new Set(names)];
 }
 
-// 剥掉 // 与 /* */ 注释,同时避开字符串/模板串里的 // (如 'https://…')。
-// 够用即可:它只服务上面那一个匹配,漏剥的后果是多报一条,不是漏报。
-function stripComments(src) {
-  let out = '';
-  let i = 0;
-  const n = src.length;
-  while (i < n) {
-    const c = src[i];
-    if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue }
-    if (c === '/' && src[i + 1] === '*') { i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++; i += 2; continue }
-    if (c === '"' || c === "'" || c === '`') {
-      const q = c; out += c; i++;
-      while (i < n && src[i] !== q) { if (src[i] === '\\') { out += src[i]; i++ } out += src[i]; i++ }
-      out += src[i] || ''; i++; continue;
-    }
-    out += c; i++;
+/** 按**顶层**逗号切（跳过括号/方括号/花括号/字符串里的逗号）。 */
+function splitTopLevel(s) {
+  const out = [];
+  let depth = 0, quote = '', cur = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote) { cur += c; if (c === quote && s[i - 1] !== '\\') quote = ''; continue }
+    if (c === '"' || c === "'" || c === '`') { quote = c; cur += c; continue }
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
+    if (c === ',' && depth === 0) { out.push(cur); cur = ''; continue }
+    cur += c;
   }
+  if (cur.trim()) out.push(cur);
   return out;
 }
 

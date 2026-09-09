@@ -181,6 +181,78 @@ test('namedExportsOf:注释里的示范代码不算导出 —— 误报会让人
   assert.deepEqual(namedExportsOf(src), ['real', 'REAL_C', 'renamed']);
 });
 
+// ---------- namedExportsOf 的五种写法与两个方向的对抗 ----------
+// 这道闸的注释写着「没有豁免口子:从对外子路径 export 出去的名字就是对外 API」。
+// 少认一种写法就是一个能悄悄溜进对外 API 的口子 —— 而那正是它要治的病。
+
+test('namedExportsOf:五种写法全认,default 不算', () => {
+  const src = [
+    'export function a() {}',
+    'export async function* b() {}',
+    'export class C {}',
+    'export const d = 1, e = 2;',        // 多声明符:只认第一个是原来的漏洞
+    'export let f, g;',
+    'function inner() {}',
+    'export { inner as h };',
+    'export default a;',                  // 没有名字,不算
+  ].join('\n');
+  assert.deepEqual(namedExportsOf(src).sort(), ['C', 'a', 'b', 'd', 'e', 'f', 'g', 'h']);
+});
+
+test('🔴 re-export 出去的名字也是对外 API', () => {
+  const root = fixture({
+    'src/other.js': ['export function helper() {}', 'export const HELPER_C = 1;'].join('\n'),
+    'src/index.js': ["export { helper } from './other.js';", "export * from './other.js';"].join('\n'),
+  });
+  try {
+    const f = path.join(root, 'src', 'index.js');
+    const got = namedExportsOf(fs.readFileSync(f, 'utf8'), f).sort();
+    assert.deepEqual(got, ['HELPER_C', 'helper'], '原来那条 (?!…from) 把这两种全排除了');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('🔴 `export { x } from` 单独也要认 —— 别被星号那条盖住', () => {
+  // 上一条测试里两种 re-export 都有，星号那条会把 helper 一起带进来，
+  // 于是「列表式排除了 from」这个 bug 在那条测试下**测不出来**（变异不红）。
+  // 这一条只留列表式，把那个盲区堵上。
+  const root = fixture({
+    'src/other.js': 'export function helper() {}\n',
+    'src/index.js': "export { helper as renamed } from './other.js';\n",
+  });
+  try {
+    const f = path.join(root, 'src', 'index.js');
+    assert.deepEqual(namedExportsOf(fs.readFileSync(f, 'utf8'), f), ['renamed']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('🔴 跟不进 `export * from` 时抛错,不许静默返回空集', () => {
+  // 静默的结果是那批导出永远不用登记 —— 这道闸最贵的失效方式。
+  assert.throws(() => namedExportsOf("export * from './x.js';"), /跟不进去/);
+});
+
+test('🔴 两个方向的对抗:注释里的示范不算,正则字面量不许把真导出吞掉', () => {
+  // 本文件原来手抄了一份剥注释的状态机,这四条**两个方向都能骗过它**:
+  // 前两条漏检(正则里的 `\/*` 被当块注释起点,后面全被吞),后两条误报。
+  // 现在复用 lint-raw.js 的 maskNonProse —— 那份被十几条对抗测试锤过。
+  const src = (...lines) => lines.join('\n');
+
+  // 漏检方向:正则里的 `\/*` 被当成块注释起点,后面的真导出全被吞掉
+  assert.deepEqual(
+    namedExportsOf(src('const RE = /\\/*/;', 'export function found1() {}')),
+    ['found1'], '正则字面量吞掉了真导出');
+  assert.deepEqual(
+    namedExportsOf(src('const P = /[a-z]*\\/*x/;', 'export const found2 = 1;')),
+    ['found2']);
+
+  // 误报方向:正则里的引号让字符串跟踪失同步,注释里的示范被当成真导出
+  assert.deepEqual(
+    namedExportsOf(src("const Q = /['\"]/;", '// export function fake() {}', 'export function real() {}')),
+    ['real'], '注释里的示范不该算导出');
+  assert.deepEqual(
+    namedExportsOf(src('/* 注释里的示范', ' * export function ghost() {}', ' */', 'export const REAL = 1;')),
+    ['REAL']);
+});
+
 // ---------- 检查 3:CLI 表 ----------
 test('CLI 表:表里列的文件必须存在', () => {
   const root = fixture({ 'tools/check.mjs': '// ok\n' });
