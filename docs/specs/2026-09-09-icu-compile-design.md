@@ -172,6 +172,12 @@ README 第一句写着框架的自我定位：
 | **2** | ~~spike 绿 → 改上游框架，USAGE 契约表同步~~ **2026-09-09 做完，v0.5.0** | `npm test` 142 绿；顺手补了 doc-check 的反方向（此前删掉一整行契约表照样全绿）|
 | **3** | 逐个项目升级并验，Racing 先（它是唯一无 `Intl` 的）| 各项目 gates 绿 |
 
+**步 3 进度（2026-09-09）**：Racing 的 spike 分支 `i18n-icu-spike` 已改用框架 v0.5.0，
+仓内那两份拷贝（`miniapp/tools/i18n-compile.mjs`、`src/i18n/make-t.js`）删掉。
+读数：miniapp 单测 1238 绿、`tools/gates.mjs` 全绿、`build:mp-weixin` 通过且**产物里 `Intl.` 出现 0 次**。
+欠：真机验收②（`pkg-dev/i18ntest` 的取词引擎自检卡三行读数），实现刚换过，得重传体验版再看一趟。
+其余项目仍在 v0.3.0，按 §10.3 各自的节奏迁，不设死截止。
+
 **spike 红了就回 §2 重选，不硬上。**
 
 ---
