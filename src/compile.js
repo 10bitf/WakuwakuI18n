@@ -7,7 +7,10 @@
 // 消费方里有小程序，而**安卓微信基础库没有 `Intl`**（Racing 的 `core/tz.js` 有
 // plat-limit 记着：dayjs-tz / luxon / date-fns-tz 全因此不能用）。
 // 所有运行时 ICU 方案（FormatJS、i18next-icu）都依赖 `Intl.PluralRules`，
-// polyfill 1.7 MB 装不下。编译产物把复数规则编进函数体，不需要 `Intl`。
+// ⚠️ **本行原写「polyfill 1.7 MB 装不下」，2026-09-09 改判**：1.7 MB 是**整个 `Intl`** 的 polyfill；
+// 只补 `Intl.PluralRules` 是 9 语种 minify **67 KB**（gzip 15 KB），Racing 主包 450 KB 余量装得下。
+// 所以运行时方案不是「装不下」，是「要多背一个 polyfill，且必须保证它先于任何取词执行」。
+// 编译产物把复数规则编进函数体，一个 polyfill 都不用背 —— 这才是它相对运行时方案的真实优势。
 //
 // # 它解掉的三件事
 //
