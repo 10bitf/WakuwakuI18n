@@ -48,6 +48,31 @@ test('analyze:报错信息带出次数差,而不是只说"不一致"', () => {
   assert.match(r.errors[0], /n\(2→1\)/, '要能一眼看出少了几次');
 });
 
+test('collectUsedKeys:方括号取词与带连字符的 key', () => {
+  // 迁 Paraglide 之后取词长这样:编译产物**只有字符串名导出**(key 里带点号时
+  // 它不生成合法标识符的具名导出),所以调用点是 m['site.brand']()。
+  // 顺带修了一个一直在的漏检:key 里的连字符不在字符类里,
+  // `site.project.trash-talk.name` 一直被报成「没人用」。
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wkwk-scan2-'));
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'a.astro'),
+    "import * as m from '../paraglide/messages.js';\n"
+    + "const x = m['site.brand']({}, opt);\n"
+    + "const y = m['site.project.trash-talk.name']({}, opt);\n"
+    + "const z = { voice: m['site.tag.voice'] };\n"
+    // 🔴 对照:长得像 key 的裸字符串**不算取词** —— 没有方括号。
+    // 没有这条对照,「方括号」这个限定就白加了(放宽到 ns.x 一段之后,
+    // 裸字符串规则会把 'site.json' 这种文件名也当成取词)。
+    + "const p = 'site.json';\n", 'utf8');
+  try {
+    const used = collectUsedKeys({ root, scan: [{ dir: 'src', exts: ['.astro'] }], namespaces: ['site'] });
+    assert.ok(used.includes('site.brand'), '方括号取词没认出来');
+    assert.ok(used.includes('site.project.trash-talk.name'), '带连字符的 key 没认出来');
+    assert.ok(used.includes('site.tag.voice'));
+    assert.equal(used.includes('site.json'), false, '裸字符串不该算取词');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('collectUsedKeys:t() 字面量、数据表 key 字面量、{{}} 模板占位;不认非命名空间前缀', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wkwk-scan-'));
   fs.mkdirSync(path.join(root, 'src'), { recursive: true });

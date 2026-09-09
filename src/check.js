@@ -138,10 +138,19 @@ export function analyze({ defined, used, locales }) {
 export function collectUsedKeys({ root, scan, namespaces }) {
   const keys = new Set();
   const nsAlt = namespaces.map(escapeRe).join('|');
+  // key 里允许连字符:`project.trash-talk.name` 这种是真实存在的
+  // (2026-09-09 在 WakuwakuDark 上发现:带连字符的 key 一直被报成「没人用」,
+  //  因为字符类里没有 `-`。这是个一直在的漏检,迁 Paraglide 才把它照出来。)
+  const SEG = '[A-Za-z0-9_-]+';
   // ② 形如 key 的裸字符串字面量(状态表等动态取词的 key 不经 t('...') 出现,靠这条认出来)
-  const keyLit = new RegExp(`['"]((?:${nsAlt})\\.[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+)['"]`, 'g');
+  const keyLit = new RegExp(`['"]((?:${nsAlt})\\.${SEG}(?:\\.${SEG})+)['"]`, 'g');
   // ③ 模板 {{ns.x.y}} 占位。前缀限定与②一致,防止 Vue/Astro 花括号插值同形误报。
-  const tplLit = new RegExp(`\\{\\{((?:${nsAlt})\\.[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+)\\}\\}`, 'g');
+  const tplLit = new RegExp(`\\{\\{((?:${nsAlt})\\.${SEG}(?:\\.${SEG})+)\\}\\}`, 'g');
+  // ④ 方括号取词:`m['ns.a.b']()`。**Paraglide 编译产物只有字符串名导出**
+  //    (key 里带点号时它不生成合法标识符的具名导出),所以迁过去之后取词长这样。
+  //    要求方括号是关键:它把这条与「碰巧长得像 key 的字符串」分开,
+  //    于是可以放宽到 `ns.x` 只有一段 —— `m['site.brand']` 是取词,而裸的 `'site.json'` 不是。
+  const bracketLit = new RegExp(`\\[\\s*['"]((?:${nsAlt})\\.${SEG}(?:\\.${SEG})*)['"]\\s*\\]`, 'g');
   const walk = (dir, exts) => {
     if (!fs.existsSync(dir)) return;
     for (const f of fs.readdirSync(dir)) {
@@ -150,9 +159,10 @@ export function collectUsedKeys({ root, scan, namespaces }) {
       if (fs.statSync(fp).isDirectory()) { walk(fp, exts); continue; }
       if (!exts.includes(path.extname(f))) continue;
       const src = fs.readFileSync(fp, 'utf8');
-      for (const m of src.matchAll(/\bt\(\s*['"]([A-Za-z][A-Za-z0-9_.]*)['"]/g)) keys.add(m[1]);
+      for (const m of src.matchAll(/\bt\(\s*['"]([A-Za-z][A-Za-z0-9_.-]*)['"]/g)) keys.add(m[1]);
       for (const m of src.matchAll(keyLit)) keys.add(m[1]);
       for (const m of src.matchAll(tplLit)) keys.add(m[1]);
+      for (const m of src.matchAll(bracketLit)) keys.add(m[1]);
     }
   };
   for (const s of scan) walk(path.resolve(root, s.dir), s.exts);
