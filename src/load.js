@@ -30,7 +30,28 @@ function assertStringLeaves(obj, srcLabel, prefix) {
   }
 }
 
-export function loadTables(i18nDir) {
+/**
+ * 读 `i18n/<locale>/<ns>.json` → 每语种一张扁平表。
+ *
+ * 两种表形状（2026-09-09 迁 Paraglide 时加的第二种）：
+ *
+ * - `'nested'`（默认，老形状）：文件内是嵌套对象，**命名空间由文件名自动加**。
+ *   `zh/app.json` 里的 `nav.data` → `app.nav.data`。
+ * - `'flat'`：文件内已经是扁平的、**前缀写在 key 里**（`"app.nav.data": "赛季"`），这里就不能再加一次，
+ *   否则变成 `app.app.nav.data`。
+ *
+ * 为什么会有第二种：`@inlang/plugin-icu1` 只读扁平 JSON（嵌套的话它编出 0 条），
+ * 而迁到 Paraglide 之后文案表就是那个形状。**key 字符串两种形状下逐字相同**，
+ * 变的只是「前缀写在文件名里还是写在 key 里」。
+ *
+ * ⚠️ **不做自动识别。** 嵌套表的顶层也可以直接是字符串（`{"brand": "kuwakuwa"}`），
+ * 与扁平表在结构上分不开 —— 猜错的后果是整表 key 前缀错位，而那种错很难一眼看出来。
+ * 所以由消费方在 `i18n.config.mjs` 里显式声明 `tableFormat`。
+ *
+ * @param {string} i18nDir
+ * @param {{ format?: 'nested' | 'flat' }} [opts]
+ */
+export function loadTables(i18nDir, opts = {}) {
   if (!fs.existsSync(i18nDir)) throw new Error(`i18n 目录不存在: ${i18nDir}`);
   const locales = fs.readdirSync(i18nDir)
     .filter((d) => fs.statSync(path.join(i18nDir, d)).isDirectory()).sort();
@@ -43,7 +64,12 @@ export function loadTables(i18nDir) {
       const ns = f.slice(0, -'.json'.length);
       const obj = JSON.parse(fs.readFileSync(path.join(i18nDir, loc, f), 'utf8'));
       assertStringLeaves(obj, `${loc}/${f}`, ns);
-      Object.assign(table, flatten(obj, ns));
+      // flat: key 里已经带前缀了，再 flatten 一次会把前缀加两遍
+      // flat: key 里已经带前缀了,再 flatten 一次会把前缀加两遍。
+      // 但 `_` 开头的说明键仍要跳过 —— 与 flatten 同一条规矩,漏了它 `_note` 会被当成一条真文案。
+      Object.assign(table, opts.format === 'flat'
+        ? Object.fromEntries(Object.entries(obj).filter(([k]) => !k.startsWith('_')))
+        : flatten(obj, ns));
     }
     tables[loc] = table;
   }

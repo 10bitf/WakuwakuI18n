@@ -14,7 +14,9 @@ async function main() {
   const cfgPath = path.join(root, 'i18n.config.mjs');
   if (!fs.existsSync(cfgPath)) { console.error(`✗ 缺 ${cfgPath}`); process.exit(1); }
   const cfg = (await import(pathToFileURL(cfgPath).href)).default;
-  const defined = loadTables(path.join(root, 'i18n'));
+  // tableFormat: 'flat' 时 key 里已带命名空间前缀（Paraglide/plugin-icu1 的表形状），
+  // 不能再按文件名加一次前缀。缺省 'nested' 是老形状。
+  const defined = loadTables(path.join(root, 'i18n'), { format: cfg.tableFormat });
   // 先归一 —— status 打错要在做任何检查之前就炸,不然会得到一份「看起来通过了」的报告。
   const declared = normalizeLocales(cfg.locales);
   const statusOf = new Map(declared.map((l) => [l.code, l.status]));

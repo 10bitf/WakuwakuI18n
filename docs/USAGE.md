@@ -393,6 +393,7 @@ lint-raw 命中时逐处列出`文件:行号:内容`,并给两条出路(实测�
 
 | 字段 | 必填 | 被谁读取 | 说明 |
 |---|---|---|---|
+| `tableFormat` | 否(缺省 `'nested'`) | `tools/check.mjs` | 取 `'nested'` 或 `'flat'`。文案表的形状:`nested`=文件内嵌套、命名空间由**文件名**自动加;`flat`=文件内扁平、前缀**写在 key 里**(`"app.nav.data": "赛季"`)。迁到 Paraglide 的项目用 `flat`——`@inlang/plugin-icu1` 只读扁平 JSON。**不自动识别**:嵌套表顶层也可以直接是字符串,两者结构上分不开,猜错会让整表前缀错位 |
 | `locales` | 否 | `tools/check.mjs` | 语言声明清单,兼收 `'zh'` 与 `{ code:'zh', status:'draft'\|'released' }` 两种写法(归一在 `src/check.js` 的 `normalizeLocales`)。真值以 `i18n/` 下实际目录为准,这一项做两件事:① 交叉校验,声明了却没建目录报 error;② 声明发布状态,决定缺条目/缺资源是提示还是拦截(见下)。`status` 缺省 `draft`;写了别的值**立刻抛错**,不静默降级 |
 | `assets` | 否 | `tools/check.mjs` | 语言包里的**非文本**交付物清单(声学模型、关键词表、prompt、锚点词)。数组,每项 `{ name, path }`;`path` 相对仓库根、**必须含 `{locale}`**(不含就抛错——那基本必是手误),按 `i18n/` 下实际语言目录展开。判据在 `src/assets.js` |
 | `scan` | 是 | `tools/check.mjs` | key 用量采集范围。数组,每项 `{ dir, exts }`(`dir` 相对仓库根,`exts` 带点如 `'.astro'`,逐项读取在 `src/check.js`)。缺了 check 直接抛错 |
@@ -474,8 +475,9 @@ public/kws/zh/        声学模型(放 public 才能被浏览器取到;path 不�
 
 | CLI | 执行(消费方仓库根) | 读取的 config 字段 | exit 1 的条件 |
 |---|---|---|---|
-| `tools/check.mjs` | `node node_modules/wakuwaku-i18n/tools/check.mjs` | `locales`、`scan` | 缺 `i18n.config.mjs`,或有 error 级问题(第 3 节) |
+| `tools/check.mjs` | `node node_modules/wakuwaku-i18n/tools/check.mjs` | `locales`、`scan`、`tableFormat` | 缺 `i18n.config.mjs`,或有 error 级问题(第 3 节) |
 | `tools/lint-raw.mjs` | `node node_modules/wakuwaku-i18n/tools/lint-raw.mjs [--summary]` | `rawLint.dirs`、`rawLint.exts`、`rawLint.exempt` | 有裸中文命中 |
+| `tools/flatten-tables.mjs` | `node node_modules/wakuwaku-i18n/tools/flatten-tables.mjs [--write]` | 无(直接读 `i18n/`) | 文案值不是字符串(指明文件与 key)。**一次性迁移工具**:把表从「嵌套+文件名当命名空间」摊平成「扁平+前缀写在 key 里」,供 `@inlang/plugin-icu1` 读。默认只预览,`--write` 才落盘;重跑幂等 |
 
 ## 6. 两道硬卡
 
