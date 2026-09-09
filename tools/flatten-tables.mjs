@@ -70,24 +70,38 @@ for (const locale of fs.readdirSync(i18nDir).sort()) {
 
     // 本脚本做两件独立的事:①摊平并加前缀 ②把说明键挪去 _notes.json。
     //
-    // 🔴 **两件事要分开判**。合成一个「都做完了才跳过」的判据会出这种事:
-    // 文件已经扁平、但说明键还在 → 判为「没做完」→ 整个重跑 → **前缀加第二遍**,
-    // 得到 `site.site.brand`。2026-09-09 在 WakuwakuDark 上真踩了一次。
-    // 这正是 load.js 注释里写的那个危险,我自己在这儿又造了一遍。
-    const all = Object.keys(obj);
-    const real = all.filter((k) => !k.startsWith('_'));
-    const alreadyFlat = real.length > 0
-      && real.every((k) => k.startsWith(ns + '.') && typeof obj[k] === 'string');
-
+    // 🔴 **判据必须逐 key,不许整文件 `every`。** 这个坑我在这儿造过两次,第二次是这样的:
+    // 整文件判「已经扁平」→ 一个混进来的老形状 key 就让整个文件判成「没做完」→ 全部重跑
+    // → **已经扁平的那些再吃一遍前缀**,得到 `site.site.brand`。
+    //
+    // 而混合态一点都不罕见 —— 有人不知道换了形状,往已摊平的表里加了一条:
+    //     { "site.brand": "kuwakuwa", "newKey": "新加的" }
+    // 整文件判据在这里给出的答案是错的,逐 key 判据给出的是对的。
     const out = {};
     const notes = {};
-    if (alreadyFlat) {
-      // 只挪说明,一个字都不碰已有的 key
-      for (const k of all) (k.startsWith('_') ? notes : out)[k] = obj[k];
-    } else {
-      flattenKeys(obj, ns, out, notes, `${locale}/${f}`);
+    const label = `${locale}/${f}`;
+    let changed = false;
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      // 说明键一律收走。key 统一带上命名空间前缀 —— 每条说明都是一个完整的 key 路径,
+      // 于是「这条说明在说哪一段」一眼可读,也不会因为层级不同而两种写法并存。
+      if (k.startsWith('_')) { notes[`${ns}.${k}`] = v; changed = true; continue }
+
+      // 🔴 **前缀已经在 key 里的时候,要以它自己为前缀继续摊,不能再套一层 ns。**
+      // 否则 `{"app.nav": {data:…}}`（摊了一半被打断的中间态）会变成 `app.app.nav.data`。
+      const alreadyPrefixed = k.startsWith(ns + '.');
+      const full = alreadyPrefixed ? k : `${ns}.${k}`;
+      if (typeof v === 'string') {
+        out[full] = v;
+        if (!alreadyPrefixed) changed = true;
+      } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+        flattenKeys(v, full, out, notes, label);
+        changed = true;
+      } else {
+        throw new Error(`文案值必须是字符串: ${label} 的 ${full} 是 ${Array.isArray(v) ? 'array' : typeof v}`);
+      }
     }
-    if (alreadyFlat && Object.keys(notes).length === 0) {
+    if (!changed) {
       console.log(`  = ${locale}/${f} 已是扁平且无说明键,跳过`);
       continue;
     }
@@ -99,10 +113,16 @@ for (const locale of fs.readdirSync(i18nDir).sort()) {
     if (WRITE) {
       fs.writeFileSync(fp, JSON.stringify(out, null, 2) + '\n', 'utf8');
       if (noteCount) {
-        // 同目录一份说明档。合并写：同一个语种下多个 ns 各有说明时不能互相覆盖。
+        // 同目录一份说明档。
+        //
+        // 🔴 **ns 那一层要深合并,不能整棵子树替换。** `{...prev, [ns]: notes}` 是替换:
+        // 第一轮抽出 `_note` 写进去,之后有人往表里加了 `_note2`,第二轮 notes 里只有
+        // `_note2` —— 整棵子树被换掉,**第一轮那条无声消失**。
+        // 丢的还是「给人看的说明」,最不容易被任何测试或守卫发现的一类内容。
         const np = path.join(ld, '_notes.json');
         const prev = fs.existsSync(np) ? JSON.parse(fs.readFileSync(np, 'utf8')) : {};
-        fs.writeFileSync(np, JSON.stringify({ ...prev, [ns]: notes }, null, 2) + '\n', 'utf8');
+        const merged = { ...prev, [ns]: { ...(prev[ns] || {}), ...notes } };
+        fs.writeFileSync(np, JSON.stringify(merged, null, 2) + '\n', 'utf8');
       }
     }
   }

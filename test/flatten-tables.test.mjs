@@ -70,6 +70,48 @@ test('🔴 幂等：跑三遍与跑一遍逐字节相同（前缀不许加第二
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('🔴 混合态：已扁平的 key 不许再吃一遍前缀', () => {
+  // 最可能发生的那种：有人不知道换了形状，往已摊平的表里加了一条老形状的 key。
+  // 整文件 `every` 判据在这里会判成「没做完」→ 全部重跑 → site.site.brand。
+  const dir = fixture({
+    'i18n/zh/site.json': { 'site.brand': 'kuwakuwa', 'site.tagline': '意义不明', newKey: '新加的' },
+  });
+  try {
+    run(dir, '--write');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'i18n/zh/site.json'), 'utf8')), {
+      'site.brand': 'kuwakuwa',      // 原样不动
+      'site.tagline': '意义不明',     // 原样不动
+      'site.newKey': '新加的',        // 只有这条被加前缀
+    });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('🔴 混合态：摊了一半被打断的中间态', () => {
+  const dir = fixture({ 'i18n/zh/app.json': { 'app.nav': { data: '赛季' } } });
+  try {
+    run(dir, '--write');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'i18n/zh/app.json'), 'utf8')),
+      { 'app.nav.data': '赛季' }, '不该变成 app.app.nav.data');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('🔴 _notes.json 是深合并，第二轮不许删掉第一轮的说明', () => {
+  // 丢的是「给人看的说明」——最不容易被任何测试或守卫发现的一类内容，所以单独钉住。
+  const dir = fixture({ 'i18n/zh/site.json': { _note: '第一条说明', brand: 'k' } });
+  try {
+    run(dir, '--write');
+    // 之后有人往表里又加了一条说明
+    const fp = path.join(dir, 'i18n/zh/site.json');
+    const t = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    t._note2 = '第二条说明';
+    fs.writeFileSync(fp, JSON.stringify(t), 'utf8');
+    run(dir, '--write');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'i18n/zh/_notes.json'), 'utf8')),
+      { site: { 'site._note': '第一条说明', 'site._note2': '第二条说明' } },
+      '第一轮那条不许消失');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('不加 --write 只预览，一个字节都不改', () => {
   const dir = fixture({ 'i18n/zh/site.json': { brand: 'kuwakuwa' } });
   try {

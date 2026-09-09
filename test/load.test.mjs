@@ -55,6 +55,36 @@ test("`_` 开头的文件不是文案表 —— `_notes.json` 不许进表", () 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("🔴 flat:混进来的嵌套子树要抛错 —— 不许复用嵌套表的递归断言", () => {
+  // 嵌套表的 assertStringLeaves 遇到对象会**递归下去**,于是扁平表里混进来的一棵子树
+  // (摊平没做干净时的残留形态)每个叶子都是字符串,被它一声不吭地放行。
+  // 后果是安静的:那个对象进了表,下游 placeholders(String(v)) 拿到 "[object Object]",
+  // 占位符比对静默变空操作。而 {"a.n": 3} 这种能拦住 —— **看着在工作,只是嵌套那个方向没防**。
+  const dir = fixture({ 'zh/site.json': { 'site.brand': 'k', nav: { data: '赛季' } } });
+  assert.throws(() => loadTables(dir, { format: 'flat' }), /nav 是 object/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('🔴 flat:key 必须以文件名开头 —— 换回「构造保证」丢掉的那条', () => {
+  // 嵌套模式下前缀由文件名生成,「key 第一段 = 文件名」在结构上不可能被违反。
+  // 扁平模式下前缀写在 key 里,那个保证没了 —— 换成显式断言。
+  const dir = fixture({ 'zh/site.json': { 'totally.other.key': 'x' } });
+  assert.throws(() => loadTables(dir, { format: 'flat' }), /必须以文件名开头/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('🔴 flat:前缀断言顺带堵死了跨文件撞 key', () => {
+  // ns 取自文件名、同目录下各不相同,每个 key 又必须以自己文件的 ns 打头 ——
+  // 于是两个文件产不出同一个 key。这正是嵌套模式那个「构造保证」的等价物。
+  // (所以 load.js 里不再单写一道重复检查:那会是够不到的死守卫,而死守卫是噪声。)
+  const dir = fixture({
+    'zh/site.json': { 'site.brand': '甲' },
+    'zh/other.json': { 'site.brand': '乙' },   // 想冒充 site 的 key
+  });
+  assert.throws(() => loadTables(dir, { format: 'flat' }), /必须以文件名开头/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('值非字符串即抛错,并指明文件与 key', () => {
   const bad = fixture({ 'zh/site.json': { hero: { count: 3 } } });
   assert.throws(() => loadTables(bad), /zh[/\\]site\.json.*site\.hero\.count/);

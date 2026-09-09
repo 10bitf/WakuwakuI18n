@@ -495,7 +495,7 @@ public/kws/zh/        声学模型(放 public 才能被浏览器取到;path 不�
 |---|---|---|---|
 | `tools/check.mjs` | `node node_modules/wakuwaku-i18n/tools/check.mjs` | `locales`、`scan`、`tableFormat` | 缺 `i18n.config.mjs`,或有 error 级问题(第 3 节) |
 | `tools/lint-raw.mjs` | `node node_modules/wakuwaku-i18n/tools/lint-raw.mjs [--summary]` | `rawLint.dirs`、`rawLint.exts`、`rawLint.exempt` | 有裸中文命中 |
-| `tools/flatten-tables.mjs` | `node node_modules/wakuwaku-i18n/tools/flatten-tables.mjs [--write]` | 无(直接读 `i18n/`) | 文案值不是字符串(指明文件与 key)。**一次性迁移工具**:把表从「嵌套+文件名当命名空间」摊平成「扁平+前缀写在 key 里」,供 `@inlang/plugin-icu1` 读。默认只预览,`--write` 才落盘;重跑幂等 |
+| `tools/flatten-tables.mjs` | `node node_modules/wakuwaku-i18n/tools/flatten-tables.mjs [--write]` | 无(直接读 `i18n/`) | 文案值不是字符串(指明文件与 key)。**一次性迁移工具**:把表从「嵌套+文件名当命名空间」摊平成「扁平+前缀写在 key 里」,供 `@inlang/plugin-icu1` 读。默认只预览,`--write` 才落盘。**逐 key 判**,所以混合态(已摊平的表里混进一条老形状的 key、或上次摊到一半被打断)也正确,重跑幂等 |
 
 ## 6. 两道硬卡
 
