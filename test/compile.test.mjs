@@ -86,6 +86,21 @@ test('🔴 复数块里写 `#` 要在编译期被拦 —— 它会走 Intl.Numbe
   assert.match(err.message, /a\.n/, '要指出是哪一条，别让人自己翻');
 });
 
+test('🔴 文案里出现 number / count 这类英文单词，不许被当成用了 Intl 助手', async () => {
+  // v0.5.0 的守卫拿正则搜**整段产物源码**，于是 Dirty 英文表里一条 "Order number"
+  // 被拦下来 —— 字符串字面量里的一个英文单词而已。**误报会让人习惯性无视这道闸**，
+  // 而这条闸挡的是安卓微信上的崩溃，废不起。
+  // 2026-09-09 拿五个项目 2200 条真实文案跑一遍才暴露：中文表一条都碰不到。
+  const table = {
+    'a.n': 'Order number',
+    'a.s': "That order number doesn't look right",
+    'a.f': 'strictNumber and _nf are just words here',
+  };
+  assert.doesNotThrow(() => compileTable(table, 'en'));
+  const t = makeT(await evalModule(compileTable(table, 'en')));
+  assert.equal(t('a.n'), 'Order number', '文案本身不许被改动');
+});
+
 test('确定有 Intl 的环境（纯 web）可以显式放行 `#`', () => {
   const src = compileTable({ 'a.n': '{n, plural, other{# 站}}' }, 'zh', { allowIntl: true });
   assert.match(src, /number/);

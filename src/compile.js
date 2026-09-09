@@ -40,8 +40,29 @@
 import MessageFormat from '@messageformat/core';
 import compileModule from '@messageformat/core/compile-module.js';
 
-/** 会把 `Intl` 拖进来的运行时助手。产物里 import 了它们就等于依赖 Intl。 */
-const INTL_HELPERS = ['number', 'strictNumber'];
+/**
+ * 会把 `Intl` 拖进来的运行时助手。`@messageformat/runtime` 里只有 `_nf` 那一个缓存
+ * 碰 `Intl`（`new Intl.NumberFormat(lc)`），而 `number` / `strictNumber` 是它的两个入口。
+ * `plural` / `select` 与 cardinals 都是纯函数，不在此列。
+ */
+const INTL_HELPERS = ['number', 'strictNumber', '_nf'];
+
+/**
+ * 产物里从 `@messageformat/runtime` **import 进来**的助手名。
+ *
+ * 🔴 **必须看 import 行，不能拿正则搜整段源码。** v0.5.0 就是那么写的，于是 Dirty
+ * 英文表里一条 `"Order number"` 被当成用了 `number()` 拦下来 —— 那只是字符串字面量里的
+ * 一个英文单词。**误报会让人习惯性无视这道闸，那它就废了**，而这条闸挡的是安卓微信上的崩溃。
+ * 2026-09-09 拿五个项目 2200 条真实文案跑一遍才暴露：中文表一条都碰不到这个坑。
+ *
+ * 只认根路径 `@messageformat/runtime`：`/lib/cardinals` 那条 import 进来的是复数规则函数，
+ * 纯逻辑，不碰 Intl。
+ */
+function runtimeImports(src) {
+  const m = /import\s*\{([^}]*)\}\s*from\s*["']@messageformat\/runtime["']/.exec(src);
+  if (!m) return [];
+  return m[1].split(',').map((x) => x.trim().split(/\s+as\s+/)[0].trim()).filter(Boolean);
+}
 
 /** 嵌套表 → 扁平 `{ 'ns.a.b': '文案' }`。命名空间当前缀，与点分 key 口径一致。 */
 export function flattenTable(node, prefix = '', out = {}) {
@@ -86,14 +107,15 @@ export function compileTable(table, locale, opts = {}) {
   const src = compileModule(mf, table);
 
   if (!opts.allowIntl) {
-    const used = INTL_HELPERS.filter((h) => new RegExp(`\\b${h}\\b`).test(src));
+    const imported = runtimeImports(src);
+    const used = INTL_HELPERS.filter((h) => imported.includes(h));
     if (used.length) {
       // 把犯事的那几条**精确**挑出来 —— 报得清楚是这条守卫的一半价值。
-      // 逐条编译再看它自己需不需要那个助手，比拿正则猜 `#` 在哪准
+      // 逐条编译再看它自己 import 了什么，比拿正则猜 `#` 在哪准
       // （`#` 紧跟在 `{` 后面，"猜"的写法第一版就漏了）。
       const guilty = Object.entries(table)
         .filter(([k, m]) => {
-          try { return INTL_HELPERS.some((h) => new RegExp(`\\b${h}\\b`).test(compileModule(mf, { [k]: m }))) }
+          try { const im = runtimeImports(compileModule(mf, { [k]: m })); return INTL_HELPERS.some((h) => im.includes(h)) }
           catch { return false }
         })
         .map(([k, m]) => `  ${k}\n    «${m}»`);
